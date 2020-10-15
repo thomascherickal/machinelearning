@@ -44,7 +44,7 @@ namespace Samples.Dynamic
 
             {
                 // Note that it is best to get the getters and values *before*
-                // iteration, so as to faciliate buffer sharing (if applicable),
+                // iteration, so as to facilitate buffer sharing (if applicable),
                 // and column-type validation once, rather than many times.
                 ReadOnlyMemory<char> textValue = default;
                 VBuffer<ReadOnlyMemory<char>> tokensValue = default;
@@ -146,6 +146,13 @@ namespace Samples.Dynamic
         private sealed class InputObjectDataView : IDataView
         {
             private readonly IEnumerable<InputObject> _data;
+            public IEnumerable<InputObject> Data
+            {
+                get
+                {
+                    return _data;
+                }
+            }
             public DataViewSchema Schema { get; }
             public bool CanShuffle => false;
 
@@ -249,7 +256,7 @@ namespace Samples.Dynamic
                 {
                     Schema = parent.Schema;
                     _position = -1;
-                    _enumerator = parent._data.GetEnumerator();
+                    _enumerator = parent.Data.GetEnumerator();
                     _getters = new Delegate[]
                     {
                         wantsLabel ?

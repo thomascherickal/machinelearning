@@ -3,12 +3,17 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Net;
 using System.Reflection;
 using System.Threading;
 using Microsoft.ML.Internal.Internallearn.Test;
+using Microsoft.ML.Runtime;
 using Microsoft.ML.TestFrameworkCommon;
+using Microsoft.ML.TestFrameworkCommon.Attributes;
+using Xunit;
 using Xunit.Abstractions;
 
 namespace Microsoft.ML.TestFramework
@@ -18,8 +23,19 @@ namespace Microsoft.ML.TestFramework
         public string TestName { get; set; }
         public string FullTestName { get; set; }
 
+        public ChannelMessageKind MessageKindToLog;
+
         static BaseTestClass()
         {
+            // specific to use tls 1.2 as https://aka.ms/mlnet-resources/ only accpets tls 1.2 or newer
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+
+            AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+            {
+                // Write to stdout because stderr does not show up in the test output
+                Console.WriteLine($"Unhandled exception: {e.ExceptionObject}");
+            };
+
             GlobalBase.AssemblyInit();
             RootDir = TestCommon.GetRepoRoot();
             DataDir = Path.Combine(RootDir, "test", "data");
@@ -48,6 +64,13 @@ namespace Microsoft.ML.TestFramework
             FullTestName = test.TestCase.TestMethod.TestClass.Class.Name + "." + test.TestCase.TestMethod.Method.Name;
             TestName = test.TestCase.TestMethod.Method.Name;
 
+            MessageKindToLog = ChannelMessageKind.Error;
+            var attributes = test.TestCase.TestMethod.Method.GetCustomAttributes(typeof(LogMessageKind));
+            foreach (var attrib in attributes)
+            {
+                MessageKindToLog = attrib.GetNamedArgument<ChannelMessageKind>("MessageKind");
+            }
+
             // write to the console when a test starts and stops so we can identify any test hangs/deadlocks in CI
             Console.WriteLine($"Starting test: {FullTestName}");
             Initialize();
@@ -56,7 +79,9 @@ namespace Microsoft.ML.TestFramework
         void IDisposable.Dispose()
         {
             Cleanup();
-            Console.WriteLine($"Finished test: {FullTestName}");
+            Process proc = Process.GetCurrentProcess();
+            Console.WriteLine($"Finished test: {FullTestName} " +
+                $"with memory usage {proc.PrivateMemorySize64.ToString("N", CultureInfo.InvariantCulture)}");
         }
 
         protected virtual void Initialize()

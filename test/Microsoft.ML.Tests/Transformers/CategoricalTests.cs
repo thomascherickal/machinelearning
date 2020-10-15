@@ -8,6 +8,7 @@ using System.Linq;
 using Microsoft.ML.Data;
 using Microsoft.ML.Model;
 using Microsoft.ML.RunTests;
+using Microsoft.ML.TestFrameworkCommon;
 using Microsoft.ML.Tools;
 using Microsoft.ML.Transforms;
 using Xunit;
@@ -103,7 +104,7 @@ namespace Microsoft.ML.Tests.Transformers
                 new TestClassWithLabel() { A = 115, B = 2000, Label = false },
                 new TestClassWithLabel() { A = 115, B = 2000, Label = false }};
 
-            var mlContext = new MLContext();
+            var mlContext = new MLContext(1);
             var dataView = mlContext.Data.LoadFromEnumerable(data);
             var pipe = mlContext.Transforms.Conversion.ConvertType("A", outputKind: DataKind.Single)
                 .Append(mlContext.Transforms.Conversion.ConvertType("B", outputKind: DataKind.Single))
@@ -126,7 +127,7 @@ namespace Microsoft.ML.Tests.Transformers
             // In this case, whatever the value of the input, the term mapping should come from the optional side data if specified.
             var data = new[] { new TestStringClass() { A = "Stay" }, new TestStringClass() { A = "awhile and listen" } };
 
-            var mlContext = new MLContext();
+            var mlContext = new MLContext(1);
             var dataView = mlContext.Data.LoadFromEnumerable(data);
 
             var sideDataBuilder = new ArrayDataViewBuilder(mlContext);
@@ -152,7 +153,7 @@ namespace Microsoft.ML.Tests.Transformers
         [Fact]
         public void Categorical()
         {
-            string dataPath = GetDataPath("breast-cancer.txt");
+            string dataPath = GetDataPath(TestDatasets.breastCancer.trainFilename);
             var data = ML.Data.LoadFromTextFile(dataPath, new[] {
                 new TextLoader.Column("ScalarString", DataKind.String, 1),
                 new TextLoader.Column("VectorString", DataKind.String, 1, 4)

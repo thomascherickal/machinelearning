@@ -415,10 +415,10 @@ namespace Microsoft.ML.Transforms.Text
                     string[] separators = column.SeparatorsArray.Select(c => c.ToString()).ToArray();
                     tokenizerNode.AddAttribute("separators", separators);
 
-                    opType = "Squeeze";
-                    var squeezeOutput = ctx.AddIntermediateVariable(_type, column.Name, true);
-                    var squeezeNode = ctx.CreateNode(opType, intermediateVar, squeezeOutput, ctx.GetNodeName(opType), "");
-                    squeezeNode.AddAttribute("axes", new long[] { 0 });
+                    opType = "Reshape";
+                    var shape = ctx.AddInitializer(new long[] { 1, -1 }, new long[] { 2 }, "Shape");
+                    var reshapeOutput = ctx.AddIntermediateVariable(new VectorDataViewType(TextDataViewType.Instance, 1), column.Name);
+                    var reshapeNode = ctx.CreateNode(opType, new[] { intermediateVar, shape }, new[] { reshapeOutput }, ctx.GetNodeName(opType), "");
                 }
             }
         }
@@ -437,6 +437,7 @@ namespace Microsoft.ML.Transforms.Text
     /// | Does this estimator need to look at the data to train its parameters? | No |
     /// | Input column data type | Scalar or Vector of [Text](xref:Microsoft.ML.Data.TextDataViewType)  |
     /// | Output column data type | Variable-size vector of [Text](xref:Microsoft.ML.Data.TextDataViewType) |
+    /// | Exportable to ONNX | Yes |
     ///
     /// The resulting <xref:Microsoft.ML.Transforms.Text.WordTokenizingTransformer> creates a new column,
     /// named as specified in the output column name parameters, where each input string is mapped to a vector of substrings obtained

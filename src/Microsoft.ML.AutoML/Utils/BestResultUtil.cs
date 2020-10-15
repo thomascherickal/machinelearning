@@ -34,6 +34,15 @@ namespace Microsoft.ML.AutoML
             return GetBestRun(results, metricsAgent, metricInfo.IsMaximizing);
         }
 
+        public static RunDetail<RankingMetrics> GetBestRun(IEnumerable<RunDetail<RankingMetrics>> results,
+            RankingMetric metric)
+        {
+            var metricsAgent = new RankingMetricsAgent(null, metric);
+
+            var metricInfo = new OptimizingMetricInfo(metric);
+            return GetBestRun(results, metricsAgent, metricInfo.IsMaximizing);
+        }
+
         public static RunDetail<TMetrics> GetBestRun<TMetrics>(IEnumerable<RunDetail<TMetrics>> results,
             IMetricsAgent<TMetrics> metricsAgent, bool isMetricMaximizing)
         {
@@ -41,6 +50,9 @@ namespace Microsoft.ML.AutoML
             if (!results.Any()) { return null; }
             var scores = results.Select(r => metricsAgent.GetScore(r.ValidationMetrics));
             var indexOfBestScore = GetIndexOfBestScore(scores, isMetricMaximizing);
+            // indexOfBestScore will be -1 if the optimization metric for all models is NaN.
+            // In this case, return the first model.
+            indexOfBestScore = indexOfBestScore != -1 ? indexOfBestScore : 0;
             return results.ElementAt(indexOfBestScore);
         }
 
@@ -51,6 +63,9 @@ namespace Microsoft.ML.AutoML
             if (!results.Any()) { return null; }
             var scores = results.Select(r => r.Results.Average(x => metricsAgent.GetScore(x.ValidationMetrics)));
             var indexOfBestScore = GetIndexOfBestScore(scores, isMetricMaximizing);
+            // indexOfBestScore will be -1 if the optimization metric for all models is NaN.
+            // In this case, return the first model.
+            indexOfBestScore = indexOfBestScore != -1 ? indexOfBestScore : 0;
             return results.ElementAt(indexOfBestScore);
         }
 

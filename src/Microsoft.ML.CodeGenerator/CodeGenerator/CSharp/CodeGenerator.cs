@@ -4,13 +4,18 @@
 
 using System;
 using System.Collections.Generic;
+using System.Data.Common;
 using System.IO;
 using System.Linq;
 using System.Text;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.ML.AutoML;
+using Microsoft.ML.CodeGenerator.CodeGenerator;
+using Microsoft.ML.CodeGenerator.Templates.Azure.Model;
 using Microsoft.ML.CodeGenerator.Templates.Console;
 using Microsoft.ML.CodeGenerator.Utilities;
+using Microsoft.ML.Data;
 
 namespace Microsoft.ML.CodeGenerator.CSharp
 {
@@ -20,10 +25,12 @@ namespace Microsoft.ML.CodeGenerator.CSharp
         private readonly CodeGeneratorSettings _settings;
         private readonly ColumnInferenceResults _columnInferenceResult;
         private static readonly HashSet<string> _recommendationTrainers = new HashSet<string>() { TrainerName.MatrixFactorization.ToString() };
-        private static readonly HashSet<string> _lightGbmTrainers = new HashSet<string>() { TrainerName.LightGbmBinary.ToString(), TrainerName.LightGbmMulti.ToString(), TrainerName.LightGbmRegression.ToString() };
+        private static readonly HashSet<string> _lightGbmTrainers = new HashSet<string>() { TrainerName.LightGbmBinary.ToString(), TrainerName.LightGbmMulti.ToString(),
+            TrainerName.LightGbmRegression.ToString(), TrainerName.LightGbmRanking.ToString() };
         private static readonly HashSet<string> _mklComponentsTrainers = new HashSet<string>() { TrainerName.OlsRegression.ToString(), TrainerName.SymbolicSgdLogisticRegressionBinary.ToString() };
-        private static readonly HashSet<string> _fastTreeTrainers = new HashSet<string>() { TrainerName.FastForestBinary.ToString(), TrainerName.FastForestRegression.ToString(), TrainerName.FastTreeBinary.ToString(), TrainerName.FastTreeRegression.ToString(), TrainerName.FastTreeTweedieRegression.ToString() };
-        private static readonly HashSet<string> _imageTransformers = new HashSet<string>() { EstimatorName.ImageLoading.ToString() };
+        private static readonly HashSet<string> _fastTreeTrainers = new HashSet<string>() { TrainerName.FastForestBinary.ToString(), TrainerName.FastForestRegression.ToString(),
+            TrainerName.FastTreeBinary.ToString(), TrainerName.FastTreeRegression.ToString(), TrainerName.FastTreeTweedieRegression.ToString(), TrainerName.FastTreeRanking.ToString() };
+        private static readonly HashSet<string> _imageTransformers = new HashSet<string>() { EstimatorName.RawByteImageLoading.ToString() };
         private static readonly HashSet<string> _imageClassificationTrainers = new HashSet<string>() { TrainerName.ImageClassification.ToString() };
 
         internal CodeGenerator(Pipeline pipeline, ColumnInferenceResults columnInferenceResult, CodeGeneratorSettings settings)
@@ -132,18 +139,19 @@ namespace Microsoft.ML.CodeGenerator.CSharp
             string modelBuilderCSFileContent) GenerateConsoleAppProjectContents(string namespaceValue,
                 Type labelTypeCsharp, bool includeLightGbmPackage, bool includeMklComponentsPackage,
                 bool includeFastTreePackage, bool includeImageTransformerPackage,
-                bool includeImageClassificationPackage, bool includeRecommenderPackage)
+                bool includeImageClassificationPackage, bool includeRecommenderPackage, bool includeOnnxPackage = false , bool includeResNet18Package = false)
         {
             var predictProgramCSFileContent = GeneratePredictProgramCSFileContent(namespaceValue);
             predictProgramCSFileContent = Utils.FormatCode(predictProgramCSFileContent);
 
             var predictProjectFileContent = GeneratPredictProjectFileContent(_settings.OutputName,
                 includeLightGbmPackage, includeMklComponentsPackage, includeFastTreePackage,
-                includeImageTransformerPackage, includeImageClassificationPackage, includeRecommenderPackage,
-                _settings.StablePackageVersion, _settings.UnstablePackageVersion);
+                includeImageTransformerPackage, includeImageClassificationPackage, includeRecommenderPackage, includeOnnxPackage, includeResNet18Package,
+                _settings.StablePackageVersion, _settings.UnstablePackageVersion, _settings.Target);
 
             var transformsAndTrainers = GenerateTransformsAndTrainers();
-            var modelBuilderCSFileContent = GenerateModelBuilderCSFileContent(transformsAndTrainers.Usings, transformsAndTrainers.TrainerMethod, transformsAndTrainers.PreTrainerTransforms, transformsAndTrainers.PostTrainerTransforms, namespaceValue, _pipeline.CacheBeforeTrainer, labelTypeCsharp.Name);
+            var modelBuilderCSFileContent = GenerateModelBuilderCSFileContent(transformsAndTrainers.Usings, transformsAndTrainers.TrainerMethod,
+                transformsAndTrainers.PreTrainerTransforms, transformsAndTrainers.PostTrainerTransforms, namespaceValue, _pipeline.CacheBeforeTrainer, labelTypeCsharp.Name, includeOnnxPackage);
             modelBuilderCSFileContent = Utils.FormatCode(modelBuilderCSFileContent);
 
             return (predictProgramCSFileContent, predictProjectFileContent, modelBuilderCSFileContent);
@@ -153,7 +161,7 @@ namespace Microsoft.ML.CodeGenerator.CSharp
             string ModelProjectFileContent) GenerateModelProjectContents(string namespaceValue,
                 Type labelTypeCsharp, bool includeLightGbmPackage, bool includeMklComponentsPackage,
                 bool includeFastTreePackage, bool includeImageTransformerPackage,
-                bool includeImageClassificationPackage, bool includeRecommenderPackage)
+                bool includeImageClassificationPackage, bool includeRecommenderPackage, bool includeOnnxModel = false)
         {
             var classLabels = GenerateClassLabels();
 
@@ -170,8 +178,8 @@ namespace Microsoft.ML.CodeGenerator.CSharp
             consumeModelCSFileContent = Utils.FormatCode(consumeModelCSFileContent);
             var modelProjectFileContent = GenerateModelProjectFileContent(includeLightGbmPackage,
                 includeMklComponentsPackage, includeFastTreePackage, includeImageTransformerPackage,
-                includeImageClassificationPackage, includeRecommenderPackage,
-                _settings.StablePackageVersion, _settings.UnstablePackageVersion);
+                includeImageClassificationPackage, includeRecommenderPackage, includeOnnxModel,
+                _settings.StablePackageVersion, _settings.UnstablePackageVersion, _settings.Target);
 
             return (modelInputCSFileContent, modelOutputCSFileContent, consumeModelCSFileContent, modelProjectFileContent);
         }
@@ -182,6 +190,7 @@ namespace Microsoft.ML.CodeGenerator.CSharp
             {
                 Namespace = namespaceValue,
                 Target = _settings.Target,
+                MLNetModelName = _settings.ModelName,
             };
             return consumeModel.TransformText();
         }
@@ -245,79 +254,25 @@ namespace Microsoft.ML.CodeGenerator.CSharp
             if (_pipeline == null)
                 throw new ArgumentNullException(nameof(_pipeline));
             var node = _pipeline.Nodes.Where(t => t.NodeType == PipelineNodeType.Trainer).First();
-            if (node == null)
-                throw new ArgumentException($"The trainer was not found.");
-
             ITrainerGenerator generator = TrainerGeneratorFactory.GetInstance(node);
             var trainerString = generator.GenerateTrainer();
             var trainerUsings = generator.GenerateUsings();
             return (trainerString, trainerUsings);
         }
 
-        internal IList<string> GenerateClassLabels()
+        /// <summary>
+        /// Utilize <see cref="ML.CodeGenerator.Utilities.Utils.GenerateClassLabels(ColumnInferenceResults, IDictionary{string, CodeGeneratorSettings.ColumnMapping})"/>
+        /// </summary>
+        internal IList<string> GenerateClassLabels(IDictionary<string, CodeGeneratorSettings.ColumnMapping> columnMapping = default)
         {
-            IList<string> result = new List<string>();
-            foreach (var column in _columnInferenceResult.TextLoaderOptions.Columns)
-            {
-                StringBuilder sb = new StringBuilder();
-                int range = (column.Source[0].Max - column.Source[0].Min).Value;
-                bool isArray = range > 0;
-                sb.Append(Symbols.PublicSymbol);
-                sb.Append(Symbols.Space);
-                switch (column.DataKind)
-                {
-                    case Microsoft.ML.Data.DataKind.String:
-                        sb.Append(Symbols.StringSymbol);
-                        break;
-                    case Microsoft.ML.Data.DataKind.Boolean:
-                        sb.Append(Symbols.BoolSymbol);
-                        break;
-                    case Microsoft.ML.Data.DataKind.Single:
-                        sb.Append(Symbols.FloatSymbol);
-                        break;
-                    case Microsoft.ML.Data.DataKind.Double:
-                        sb.Append(Symbols.DoubleSymbol);
-                        break;
-                    case Microsoft.ML.Data.DataKind.Int32:
-                        sb.Append(Symbols.IntSymbol);
-                        break;
-                    case Microsoft.ML.Data.DataKind.UInt32:
-                        sb.Append(Symbols.UIntSymbol);
-                        break;
-                    case Microsoft.ML.Data.DataKind.Int64:
-                        sb.Append(Symbols.LongSymbol);
-                        break;
-                    case Microsoft.ML.Data.DataKind.UInt64:
-                        sb.Append(Symbols.UlongSymbol);
-                        break;
-                    default:
-                        throw new ArgumentException($"The data type '{column.DataKind}' is not handled currently.");
-
-                }
-
-                if (range > 0)
-                {
-                    result.Add($"[ColumnName(\"{column.Name}\"),LoadColumn({column.Source[0].Min}, {column.Source[0].Max}) VectorType({(range + 1)})]");
-                    sb.Append("[]");
-                }
-                else
-                {
-                    result.Add($"[ColumnName(\"{column.Name}\"), LoadColumn({column.Source[0].Min})]");
-                }
-                sb.Append(" ");
-                sb.Append(Utils.Normalize(column.Name));
-                sb.Append("{get; set;}");
-                result.Add(sb.ToString());
-                result.Add("\r\n");
-            }
-            return result;
+            return Utils.GenerateClassLabels(_columnInferenceResult, columnMapping);
         }
 
         #region Model project
-        private static string GenerateModelProjectFileContent(bool includeLightGbmPackage,
+        private string GenerateModelProjectFileContent(bool includeLightGbmPackage,
             bool includeMklComponentsPackage, bool includeFastTreePackage, bool includeImageTransformerPackage,
-                bool includeImageClassificationPackage, bool includeRecommenderPackage,
-                string stablePackageVersion, string unstablePackageVersion)
+                bool includeImageClassificationPackage, bool includeRecommenderPackage, bool includeOnnxModel,
+                string stablePackageVersion, string unstablePackageVersion, GenerateTarget target)
         {
             ModelProject modelProject = new ModelProject()
             {
@@ -326,9 +281,12 @@ namespace Microsoft.ML.CodeGenerator.CSharp
                 IncludeFastTreePackage = includeFastTreePackage,
                 IncludeImageTransformerPackage = includeImageTransformerPackage,
                 IncludeImageClassificationPackage = includeImageClassificationPackage,
+                IncludeOnnxModel = includeOnnxModel,
                 IncludeRecommenderPackage = includeRecommenderPackage,
                 StablePackageVersion = stablePackageVersion,
-                UnstablePackageVersion = unstablePackageVersion
+                UnstablePackageVersion = unstablePackageVersion,
+                OnnxRuntimePackageVersion = _settings.OnnxRuntimePacakgeVersion,
+                Target = target,
             };
 
             return modelProject.TransformText();
@@ -357,10 +315,11 @@ namespace Microsoft.ML.CodeGenerator.CSharp
         #endregion
 
         #region Predict Project
-        private static string GeneratPredictProjectFileContent(string namespaceValue, bool includeLightGbmPackage,
+        private string GeneratPredictProjectFileContent(string namespaceValue, bool includeLightGbmPackage,
             bool includeMklComponentsPackage, bool includeFastTreePackage, bool includeImageTransformerPackage,
                 bool includeImageClassificationPackage, bool includeRecommenderPackage,
-                string stablePackageVersion, string unstablePackageVersion)
+                bool includeOnnxPackage, bool includeResNet18Package,
+                string stablePackageVersion, string unstablePackageVersion, GenerateTarget target)
         {
             var predictProjectFileContent = new PredictProject()
             {
@@ -370,30 +329,31 @@ namespace Microsoft.ML.CodeGenerator.CSharp
                 IncludeFastTreePackage = includeFastTreePackage,
                 IncludeImageTransformerPackage = includeImageTransformerPackage,
                 IncludeImageClassificationPackage = includeImageClassificationPackage,
+                IncludeOnnxPackage = includeOnnxPackage,
+                IncludeResNet18Package = includeResNet18Package,
                 IncludeRecommenderPackage = includeRecommenderPackage,
                 StablePackageVersion = stablePackageVersion,
-                UnstablePackageVersion = unstablePackageVersion
+                UnstablePackageVersion = unstablePackageVersion,
+                OnnxRuntimePackageVersion = _settings.OnnxRuntimePacakgeVersion,
+                Target = target,
             };
             return predictProjectFileContent.TransformText();
         }
 
         private string GeneratePredictProgramCSFileContent(string namespaceValue)
         {
-            var columns = _columnInferenceResult.TextLoaderOptions.Columns;
-            var featuresList = columns.Where((str) => str.Name != _settings.LabelName).Select((str) => str.Name).ToList();
+            var sampleData = Utils.GenerateSampleData(_settings.TrainDataset, _columnInferenceResult);
             PredictProgram predictProgram = new PredictProgram()
             {
                 TaskType = _settings.MlTask.ToString(),
                 LabelName = _settings.LabelName,
                 Namespace = namespaceValue,
-                TestDataPath = _settings.TestDataset,
-                TrainDataPath = _settings.TrainDataset,
                 HasHeader = _columnInferenceResult.TextLoaderOptions.HasHeader,
                 Separator = _columnInferenceResult.TextLoaderOptions.Separators.FirstOrDefault(),
                 AllowQuoting = _columnInferenceResult.TextLoaderOptions.AllowQuoting,
                 AllowSparse = _columnInferenceResult.TextLoaderOptions.AllowSparse,
-                Features = featuresList,
                 Target = _settings.Target,
+                SampleData = sampleData,
             };
             return predictProgram.TransformText();
         }
@@ -404,7 +364,8 @@ namespace Microsoft.ML.CodeGenerator.CSharp
             List<string> postTrainerTransforms,
             string namespaceValue,
             bool cacheBeforeTrainer,
-            string predictionLabelType)
+            string predictionLabelType,
+            bool hasOnnxModel = false)
         {
             var modelBuilder = new ModelBuilder()
             {
@@ -423,6 +384,8 @@ namespace Microsoft.ML.CodeGenerator.CSharp
                 LabelName = _settings.LabelName,
                 CacheBeforeTrainer = cacheBeforeTrainer,
                 Target = _settings.Target,
+                HasOnnxModel = hasOnnxModel,
+                MLNetModelName = _settings.ModelName,
             };
 
             return modelBuilder.TransformText();

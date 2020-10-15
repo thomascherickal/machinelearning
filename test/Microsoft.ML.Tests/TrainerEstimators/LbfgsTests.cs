@@ -101,14 +101,14 @@ namespace Microsoft.ML.Tests.TrainerEstimators
 
                 Assert.NotNull(biasStats);
 
-                CompareNumbersWithTolerance(biasStats.StandardError, 0.25, digitsOfPrecision: 2);
-                CompareNumbersWithTolerance(biasStats.ZScore, 7.97, digitsOfPrecision: 2);
+                CompareNumbersWithTolerance(biasStats.StandardError, 0.24, digitsOfPrecision: 2);
+                CompareNumbersWithTolerance(biasStats.ZScore, 8.32, digitsOfPrecision: 2);
 
                 var scoredData = transformer.Transform(dataView);
 
                 var coefficients = stats.GetWeightsCoefficientStatistics(100);
 
-                Assert.Equal(18, coefficients.Length);
+                Assert.Equal(17, coefficients.Length);
 
                 foreach (var coefficient in coefficients)
                     Assert.True(coefficient.StandardError < 1.0);
@@ -177,7 +177,7 @@ namespace Microsoft.ML.Tests.TrainerEstimators
             Done();
         }
 
-        [LessThanNetCore30OrNotNetCore]
+        [Fact]
         public void TestMLRWithStats()
         {
             (IEstimator<ITransformer> pipe, IDataView dataView) = GetMulticlassPipeline();
@@ -198,8 +198,13 @@ namespace Microsoft.ML.Tests.TrainerEstimators
                 var stats = modelParams.Statistics;
                 Assert.NotNull(stats);
 
+#if NETCOREAPP3_1
+                CompareNumbersWithTolerance(stats.Deviance, 45.79, digitsOfPrecision: 2);
+                CompareNumbersWithTolerance(stats.NullDeviance, 329.58, digitsOfPrecision: 2);
+#else
                 CompareNumbersWithTolerance(stats.Deviance, 45.35, digitsOfPrecision: 2);
                 CompareNumbersWithTolerance(stats.NullDeviance, 329.58, digitsOfPrecision: 2);
+#endif
                 //Assert.Equal(14, stats.ParametersCount);
                 Assert.Equal(150, stats.TrainingExampleCount);
             };

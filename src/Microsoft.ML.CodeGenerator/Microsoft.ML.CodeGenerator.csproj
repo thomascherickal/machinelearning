@@ -6,8 +6,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Templates\Azure\ConsoleApp\**" />
+    <EmbeddedResource Remove="Templates\Azure\ConsoleApp\**" />
+    <None Remove="Templates\Azure\ConsoleApp\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="System.CodeDom" Version="$(SystemCodeDomPackageVersion)" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="$(MicrosoftCodeAnalysisCSharpVersion)" />
+    <PackageReference Include="System.Collections.Specialized" Version="4.3.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -15,6 +22,18 @@
   </ItemGroup>
   
   <ItemGroup>
+    <None Update="Templates\Azure\Console\AzureModelBuilder.tt">
+      <Generator>TextTemplatingFilePreprocessor</Generator>
+      <LastGenOutput>AzureModelBuilder.cs</LastGenOutput>
+    </None>
+    <None Update="Templates\Azure\Model\AzureObjectDetectionModelOutputClass.tt">
+      <LastGenOutput>AzureObjectDetectionModelOutputClass.cs</LastGenOutput>
+      <Generator>TextTemplatingFilePreprocessor</Generator>
+    </None>
+    <None Update="Templates\Azure\Model\AzureImageModelOutputClass.tt">
+      <LastGenOutput>AzureImageModelOutputClass.cs</LastGenOutput>
+      <Generator>TextTemplatingFilePreprocessor</Generator>
+    </None>
     <None Update="Templates\Console\Annotation.ttinclude">
     </None>
     <None Update="Templates\Console\ConsumeModel.tt">
@@ -52,6 +71,31 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Update="Templates\Azure\Console\AzureModelBuilder.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>AzureModelBuilder.tt</DependentUpon>
+    </Compile>
+    <Compile Update="Templates\Azure\Model\AzureImageModelOutputClass - Copy.cs">
+      <DependentUpon>AzureImageModelOutputClass.tt</DependentUpon>
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+    </Compile>
+    <Compile Update="Templates\Azure\Model\AzureImageModelOutputClass.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>AzureImageModelOutputClass.tt</DependentUpon>
+    </Compile>
+    <Compile Update="Templates\Azure\Model\OnnxModelOutputClass - Copy.cs">
+      <DependentUpon>OnnxModelOutputClass.tt</DependentUpon>
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+    </Compile>
+    <Compile Update="Templates\Azure\Model\AzureObjectDetectionModelOutputClass.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>AzureObjectDetectionModelOutputClass.tt</DependentUpon>
+    </Compile>
     <Compile Update="Templates\Console\ConsumeModel.cs">
       <DesignTime>True</DesignTime>
       <AutoGen>True</AutoGen>
@@ -86,16 +130,6 @@
       <DesignTime>True</DesignTime>
       <AutoGen>True</AutoGen>
       <DependentUpon>PredictProject.tt</DependentUpon>
-    </Compile>
-    <Compile Update="Templates\Templates\Console\ModelInputClass.cs">
-      <DesignTime>True</DesignTime>
-      <AutoGen>True</AutoGen>
-      <DependentUpon>ModelInputClass.tt</DependentUpon>
-    </Compile>
-    <Compile Update="Templates\Templates\Console\ModelOutputClass.cs">
-      <DesignTime>True</DesignTime>
-      <AutoGen>True</AutoGen>
-      <DependentUpon>ModelOutputClass.tt</DependentUpon>
     </Compile>
   </ItemGroup>
 </Project>

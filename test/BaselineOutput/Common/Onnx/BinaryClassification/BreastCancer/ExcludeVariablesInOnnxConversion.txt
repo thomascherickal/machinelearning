@@ -18,8 +18,8 @@
           {
             "name": "keys_strings",
             "strings": [
-              "NA==",
               "MQ==",
+              "NA==",
               "OA==",
               "MTA=",
               "Mg==",
@@ -33,8 +33,16 @@
           },
           {
             "name": "default_int64",
-            "i": "-1",
             "type": "INT"
+          },
+          {
+            "name": "default_string",
+            "s": "MA==",
+            "type": "STRING"
+          },
+          {
+            "name": "default_float",
+            "type": "FLOAT"
           },
           {
             "name": "values_int64s",
@@ -94,7 +102,7 @@
           "Cast"
         ],
         "output": [
-          "encoded"
+          "F21"
         ],
         "name": "OneHotEncoder",
         "opType": "OneHotEncoder",
@@ -102,7 +110,6 @@
           {
             "name": "cats_int64s",
             "ints": [
-              "0",
               "1",
               "2",
               "3",
@@ -111,7 +118,8 @@
               "6",
               "7",
               "8",
-              "9"
+              "9",
+              "10"
             ],
             "type": "INTS"
           },
@@ -122,29 +130,6 @@
           }
         ],
         "domain": "ai.onnx.ml"
-      },
-      {
-        "input": [
-          "encoded"
-        ],
-        "output": [
-          "F21"
-        ],
-        "name": "ReduceSum",
-        "opType": "ReduceSum",
-        "attribute": [
-          {
-            "name": "axes",
-            "ints": [
-              "1"
-            ],
-            "type": "INTS"
-          },
-          {
-            "name": "keepdims",
-            "type": "INT"
-          }
-        ]
       },
       {
         "input": [
@@ -177,7 +162,7 @@
           "F22"
         ],
         "output": [
-          "Features"
+          "VectorFeaturizerOutput"
         ],
         "name": "FeatureVectorizer",
         "opType": "FeatureVectorizer",
@@ -192,6 +177,23 @@
           }
         ],
         "domain": "ai.onnx.ml"
+      },
+      {
+        "input": [
+          "VectorFeaturizerOutput"
+        ],
+        "output": [
+          "Features"
+        ],
+        "name": "Cast1",
+        "opType": "Cast",
+        "attribute": [
+          {
+            "name": "to",
+            "i": "1",
+            "type": "INT"
+          }
+        ]
       },
       {
         "input": [
@@ -293,7 +295,7 @@
           {
             "name": "nodes_featureids",
             "ints": [
-              "2",
+              "1",
               "0",
               "0"
             ],
@@ -372,7 +374,7 @@
             "name": "target_weights",
             "floats": [
               0.504761934,
-              -0.979112267
+              -0.9791667
             ],
             "type": "FLOATS"
           }
@@ -381,25 +383,25 @@
       },
       {
         "input": [
-          "Score"
+          "Score",
+          "Slope"
+        ],
+        "output": [
+          "MulNodeOutput"
+        ],
+        "name": "Mul",
+        "opType": "Mul"
+      },
+      {
+        "input": [
+          "MulNodeOutput",
+          "Offset"
         ],
         "output": [
           "linearOutput"
         ],
-        "name": "Affine",
-        "opType": "Affine",
-        "attribute": [
-          {
-            "name": "alpha",
-            "f": 0.4,
-            "type": "FLOAT"
-          },
-          {
-            "name": "beta",
-            "f": -1E-07,
-            "type": "FLOAT"
-          }
-        ]
+        "name": "Add",
+        "opType": "Add"
       },
       {
         "input": [
@@ -413,17 +415,16 @@
       },
       {
         "input": [
-          "Probability"
+          "Score"
         ],
         "output": [
-          "PredictedLabel"
+          "BinarizerOutput"
         ],
         "name": "Binarizer",
         "opType": "Binarizer",
         "attribute": [
           {
             "name": "threshold",
-            "f": 0.5,
             "type": "FLOAT"
           }
         ],
@@ -431,12 +432,39 @@
       },
       {
         "input": [
+          "BinarizerOutput"
+        ],
+        "output": [
+          "PredictedLabel"
+        ],
+        "name": "Cast2",
+        "opType": "Cast",
+        "attribute": [
+          {
+            "name": "to",
+            "i": "9",
+            "type": "INT"
+          }
+        ]
+      },
+      {
+        "input": [
+          "F3"
+        ],
+        "output": [
+          "F3.output"
+        ],
+        "name": "Identity",
+        "opType": "Identity"
+      },
+      {
+        "input": [
           "PredictedLabel"
         ],
         "output": [
-          "PredictedLabel0"
+          "PredictedLabel.output"
         ],
-        "name": "Identity",
+        "name": "Identity0",
         "opType": "Identity"
       },
       {
@@ -444,9 +472,9 @@
           "Score"
         ],
         "output": [
-          "Score0"
+          "Score.output"
         ],
-        "name": "Identity0",
+        "name": "Identity1",
         "opType": "Identity"
       },
       {
@@ -454,13 +482,29 @@
           "Probability"
         ],
         "output": [
-          "Probability0"
+          "Probability.output"
         ],
-        "name": "Identity1",
+        "name": "Identity2",
         "opType": "Identity"
       }
     ],
     "name": "A Simple Pipeline",
+    "initializer": [
+      {
+        "dataType": 1,
+        "floatData": [
+          0.4
+        ],
+        "name": "Slope"
+      },
+      {
+        "dataType": 1,
+        "floatData": [
+          0
+        ],
+        "name": "Offset"
+      }
+    ],
     "input": [
       {
         "name": "F1",
@@ -470,7 +514,7 @@
             "shape": {
               "dim": [
                 {
-                  "dimValue": "1"
+                  "dimValue": "-1"
                 },
                 {
                   "dimValue": "1"
@@ -488,10 +532,28 @@
             "shape": {
               "dim": [
                 {
-                  "dimValue": "1"
+                  "dimValue": "-1"
                 },
                 {
                   "dimValue": "1"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "F3",
+        "type": {
+          "tensorType": {
+            "elemType": 8,
+            "shape": {
+              "dim": [
+                {
+                  "dimValue": "-1"
+                },
+                {
+                  "dimValue": "5"
                 }
               ]
             }
@@ -501,14 +563,32 @@
     ],
     "output": [
       {
-        "name": "PredictedLabel0",
+        "name": "F3.output",
+        "type": {
+          "tensorType": {
+            "elemType": 8,
+            "shape": {
+              "dim": [
+                {
+                  "dimValue": "-1"
+                },
+                {
+                  "dimValue": "5"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "PredictedLabel.output",
         "type": {
           "tensorType": {
             "elemType": 9,
             "shape": {
               "dim": [
                 {
-                  "dimValue": "1"
+                  "dimValue": "-1"
                 },
                 {
                   "dimValue": "1"
@@ -519,14 +599,14 @@
         }
       },
       {
-        "name": "Score0",
+        "name": "Score.output",
         "type": {
           "tensorType": {
             "elemType": 1,
             "shape": {
               "dim": [
                 {
-                  "dimValue": "1"
+                  "dimValue": "-1"
                 },
                 {
                   "dimValue": "1"
@@ -537,14 +617,14 @@
         }
       },
       {
-        "name": "Probability0",
+        "name": "Probability.output",
         "type": {
           "tensorType": {
             "elemType": 1,
             "shape": {
               "dim": [
                 {
-                  "dimValue": "1"
+                  "dimValue": "-1"
                 },
                 {
                   "dimValue": "1"
@@ -564,7 +644,25 @@
             "shape": {
               "dim": [
                 {
+                  "dimValue": "-1"
+                },
+                {
                   "dimValue": "1"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "LabelEncoderOutput",
+        "type": {
+          "tensorType": {
+            "elemType": 7,
+            "shape": {
+              "dim": [
+                {
+                  "dimValue": "-1"
                 },
                 {
                   "dimValue": "1"
@@ -582,10 +680,28 @@
             "shape": {
               "dim": [
                 {
-                  "dimValue": "1"
+                  "dimValue": "-1"
                 },
                 {
                   "dimValue": "10"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "Cast",
+        "type": {
+          "tensorType": {
+            "elemType": 7,
+            "shape": {
+              "dim": [
+                {
+                  "dimValue": "-1"
+                },
+                {
+                  "dimValue": "1"
                 }
               ]
             }
@@ -600,10 +716,28 @@
             "shape": {
               "dim": [
                 {
-                  "dimValue": "1"
+                  "dimValue": "-1"
                 },
                 {
                   "dimValue": "10"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "VectorFeaturizerOutput",
+        "type": {
+          "tensorType": {
+            "elemType": 1,
+            "shape": {
+              "dim": [
+                {
+                  "dimValue": "-1"
+                },
+                {
+                  "dimValue": "11"
                 }
               ]
             }
@@ -618,7 +752,7 @@
             "shape": {
               "dim": [
                 {
-                  "dimValue": "1"
+                  "dimValue": "-1"
                 },
                 {
                   "dimValue": "11"
@@ -636,10 +770,154 @@
             "shape": {
               "dim": [
                 {
-                  "dimValue": "1"
+                  "dimValue": "-1"
                 },
                 {
                   "dimValue": "11"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "PredictedLabel",
+        "type": {
+          "tensorType": {
+            "elemType": 9,
+            "shape": {
+              "dim": [
+                {
+                  "dimValue": "-1"
+                },
+                {
+                  "dimValue": "1"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "Score",
+        "type": {
+          "tensorType": {
+            "elemType": 1,
+            "shape": {
+              "dim": [
+                {
+                  "dimValue": "-1"
+                },
+                {
+                  "dimValue": "1"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "Probability",
+        "type": {
+          "tensorType": {
+            "elemType": 1,
+            "shape": {
+              "dim": [
+                {
+                  "dimValue": "-1"
+                },
+                {
+                  "dimValue": "1"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "BinarizerOutput",
+        "type": {
+          "tensorType": {
+            "elemType": 1,
+            "shape": {
+              "dim": [
+                {
+                  "dimValue": "-1"
+                },
+                {
+                  "dimValue": "1"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "F3.output",
+        "type": {
+          "tensorType": {
+            "elemType": 8,
+            "shape": {
+              "dim": [
+                {
+                  "dimValue": "-1"
+                },
+                {
+                  "dimValue": "5"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "PredictedLabel.output",
+        "type": {
+          "tensorType": {
+            "elemType": 9,
+            "shape": {
+              "dim": [
+                {
+                  "dimValue": "-1"
+                },
+                {
+                  "dimValue": "1"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "Score.output",
+        "type": {
+          "tensorType": {
+            "elemType": 1,
+            "shape": {
+              "dim": [
+                {
+                  "dimValue": "-1"
+                },
+                {
+                  "dimValue": "1"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "Probability.output",
+        "type": {
+          "tensorType": {
+            "elemType": 1,
+            "shape": {
+              "dim": [
+                {
+                  "dimValue": "-1"
+                },
+                {
+                  "dimValue": "1"
                 }
               ]
             }
@@ -654,7 +932,7 @@
       "version": "2"
     },
     {
-      "version": "9"
+      "version": "12"
     }
   ]
 }

@@ -14,6 +14,8 @@ namespace Microsoft.ML.Model.OnnxConverter
     /// </summary>
     internal sealed class OnnxContextImpl : OnnxContext
     {
+        private const int CurrentOpSetVersion = 12;
+        private const int MinimumOpSetVersion = 9;
         private readonly List<OnnxCSharpToProtoWrapper.NodeProto> _nodes;
         private readonly List<OnnxUtils.ModelArgs> _inputs;
         // The map from IDataView column names to variable names.
@@ -32,9 +34,10 @@ namespace Microsoft.ML.Model.OnnxConverter
         private readonly string _producerVersion;
         private readonly long _modelVersion;
         private readonly OnnxVersion _onnxVersion;
+        private readonly int _opSetVersion;
 
         public OnnxContextImpl(IHostEnvironment env, string name, string producerName,
-            string producerVersion, long modelVersion, string domain, OnnxVersion onnxVersion)
+            string producerVersion, long modelVersion, string domain, OnnxVersion onnxVersion, int opSetVersion = CurrentOpSetVersion)
         {
             Contracts.CheckValue(env, nameof(env));
             _host = env.Register(nameof(OnnxContext));
@@ -55,6 +58,9 @@ namespace Microsoft.ML.Model.OnnxConverter
             _modelVersion = modelVersion;
             _domain = domain;
             _onnxVersion = onnxVersion;
+            _opSetVersion = opSetVersion <= CurrentOpSetVersion ?
+                            opSetVersion >= MinimumOpSetVersion ? opSetVersion : throw _host.ExceptParam(nameof(opSetVersion), $"Requested OpSet version {opSetVersion} is lower than the minimum required OpSet version {MinimumOpSetVersion}") :
+                            throw _host.ExceptParam(nameof(opSetVersion), $"Requested OpSet version {opSetVersion} is higher than the current most updated OpSet version {CurrentOpSetVersion}");
         }
 
         public override bool ContainsColumn(string colName) => _columnNameMap.ContainsKey(colName);
@@ -125,6 +131,12 @@ namespace Microsoft.ML.Model.OnnxConverter
         {
             _host.CheckNonEmpty(prefix, nameof(prefix));
             return GetUniqueName(prefix, _nodeNames.Contains);
+        }
+
+        public override void CheckOpSetVersion(int thisTransformerMinumumOpSetVersion, string registerTransformerName)
+        {
+            if (_opSetVersion < thisTransformerMinumumOpSetVersion)
+                throw _host.ExceptParam(nameof(thisTransformerMinumumOpSetVersion), $"Requested OpSet version {_opSetVersion} is lower than {registerTransformerName}'s minimum OpSet version requirement: {thisTransformerMinumumOpSetVersion}");
         }
 
         /// <summary>
@@ -247,6 +259,15 @@ namespace Microsoft.ML.Model.OnnxConverter
             _inputs.Add(OnnxUtils.GetModelArgs(type, colName));
         }
 
+        public override void RemoveInputVariable(string colName)
+        {
+            var variableName = TryGetVariableName(colName);
+            _host.CheckValue(variableName, nameof(variableName));
+
+            RemoveVariable(variableName, true);
+            _inputs.Remove(_inputs.Single(modelArg => modelArg.Name == variableName));
+        }
+
         /// <summary>
         /// Retrieve the shape of an ONNX variable. Returns null if no shape for the specified variable can be found.
         /// </summary>
@@ -270,10 +291,24 @@ namespace Microsoft.ML.Model.OnnxConverter
         }
 
         /// Adds constant tensor into the graph.
+        public override string AddInitializer(bool value, string name = null, bool makeUniqueName = true)
+        {
+            name = AddVariable(name ?? "bool", makeUniqueName);
+            _initializers.Add(OnnxUtils.MakeInt32(name, typeof(bool), value ? 1 : 0));
+            return name;
+        }
+
         public override string AddInitializer(float value, string name = null, bool makeUniqueName = true)
         {
             name = AddVariable(name ?? "float", makeUniqueName);
             _initializers.Add(OnnxUtils.MakeFloat(name, value));
+            return name;
+        }
+
+        public override string AddInitializer(int value, Type type, string name = null, bool makeUniqueName = true)
+        {
+            name = AddVariable(name ?? "int32", makeUniqueName);
+            _initializers.Add(OnnxUtils.MakeInt32(name, type, value));
             return name;
         }
 
@@ -291,6 +326,31 @@ namespace Microsoft.ML.Model.OnnxConverter
             return name;
         }
 
+        public override string AddInitializer(double value, string name = null, bool makeUniqueName = true)
+        {
+            name = AddVariable(name ?? "double", makeUniqueName);
+            _initializers.Add(OnnxUtils.MakeDouble(name, value));
+            return name;
+        }
+
+        public override string AddInitializer(ulong value, bool isUint64, string name = null, bool makeUniqueName = true)
+        {
+            name = AddVariable(name ?? "uint64", makeUniqueName);
+            _initializers.Add(OnnxUtils.MakeUInt(name, isUint64, value));
+            return name;
+        }
+
+        public override string AddInitializer(IEnumerable<bool> values, IEnumerable<long> dims, string name = null, bool makeUniqueName = true)
+        {
+            _host.CheckValue(values, nameof(values));
+            if (dims != null)
+                _host.Check(dims.Aggregate((x, y) => x * y) == values.Count(), "Number of elements doesn't match tensor size");
+
+            name = AddVariable(name ?? "bools", makeUniqueName);
+            _initializers.Add(OnnxUtils.MakeInt32s(name, typeof(bool), values.Select(v => Convert.ToInt32(v)), dims));
+            return name;
+        }
+
         public override string AddInitializer(IEnumerable<float> values, IEnumerable<long> dims, string name = null, bool makeUniqueName = true)
         {
             _host.CheckValue(values, nameof(values));
@@ -302,14 +362,14 @@ namespace Microsoft.ML.Model.OnnxConverter
             return name;
         }
 
-        public override string AddInitializer(IEnumerable<long> values, IEnumerable<long> dims, string name = null, bool makeUniqueName = true)
+        public override string AddInitializer(IEnumerable<int> values, Type type, IEnumerable<long> dims, string name = null, bool makeUniqueName = true)
         {
             _host.CheckValue(values, nameof(values));
             if (dims != null)
                 _host.Check(dims.Aggregate((x, y) => x * y) == values.Count(), "Number of elements doesn't match tensor size");
 
-            name = AddVariable(name ?? "int64s", makeUniqueName);
-            _initializers.Add(OnnxUtils.MakeInt64s(name, values, dims));
+            name = AddVariable(name ?? "int32s", makeUniqueName);
+            _initializers.Add(OnnxUtils.MakeInt32s(name, type, values, dims));
             return name;
         }
 
@@ -324,11 +384,44 @@ namespace Microsoft.ML.Model.OnnxConverter
             return name;
         }
 
+        public override string AddInitializer(IEnumerable<long> values, IEnumerable<long> dims, string name = null, bool makeUniqueName = true)
+        {
+            _host.CheckValue(values, nameof(values));
+            if (dims != null)
+                _host.Check(dims.Aggregate((x, y) => x * y) == values.Count(), "Number of elements doesn't match tensor size");
+
+            name = AddVariable(name ?? "int64s", makeUniqueName);
+            _initializers.Add(OnnxUtils.MakeInt64s(name, values, dims));
+            return name;
+        }
+
+        public override string AddInitializer(IEnumerable<double> values, IEnumerable<long> dims, string name = null, bool makeUniqueName = true)
+        {
+            _host.CheckValue(values, nameof(values));
+            if (dims != null)
+                _host.Check(dims.Aggregate((x, y) => x * y) == values.Count(), "Number of elements doesn't match tensor size");
+
+            name = AddVariable(name ?? "doubles", makeUniqueName);
+            _initializers.Add(OnnxUtils.MakeDoubles(name, values, dims));
+            return name;
+        }
+
+        public override string AddInitializer(IEnumerable<ulong> values, bool isUint64, IEnumerable<long> dims, string name = null, bool makeUniqueName = true)
+        {
+            _host.CheckValue(values, nameof(values));
+            if (dims != null)
+                _host.Check(dims.Aggregate((x, y) => x * y) == values.Count(), "Number of elements doesn't match tensor size");
+
+            name = AddVariable(name ?? "uints", makeUniqueName);
+            _initializers.Add(OnnxUtils.MakeUInts(name, isUint64, values, dims));
+            return name;
+        }
+
         /// <summary>
         /// Makes the ONNX model based on the context.
         /// </summary>
         public OnnxCSharpToProtoWrapper.ModelProto MakeModel()
-            => OnnxUtils.MakeModel(_nodes, _producerName, _name, _domain, _producerVersion, _modelVersion, _inputs, _outputs, _intermediateValues, _initializers);
+            => OnnxUtils.MakeModel(_nodes, _producerName, _name, _domain, _producerVersion, _modelVersion, _opSetVersion, _inputs, _outputs, _intermediateValues, _initializers);
 
         /// <summary>
         /// Return either "Experimental" or "Stable". The string "Experimental" indicates that some experimental features which are

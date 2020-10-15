@@ -5,8 +5,8 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
-using System.Threading.Tasks.Dataflow;
 using Microsoft.ML;
 using Microsoft.ML.CommandLine;
 using Microsoft.ML.Internal.Utilities;
@@ -47,7 +47,7 @@ namespace Microsoft.ML.Sweeper
         /// Propose a <see cref="ParameterSet"/>.
         /// </summary>
         /// <returns>A future <see cref="ParameterSet"/> and its id. Null if unavailable or cancelled.</returns>
-        Task<ParameterSetWithId> Propose();
+        Task<ParameterSetWithId> ProposeAsync();
 
         /// <summary>
         /// Notify the sweeper of a finished run.
@@ -108,7 +108,7 @@ namespace Microsoft.ML.Sweeper
             }
         }
 
-        public Task<ParameterSetWithId> Propose()
+        public Task<ParameterSetWithId> ProposeAsync()
         {
             if (_canceled)
                 return Task.FromResult<ParameterSetWithId>(null);
@@ -168,7 +168,7 @@ namespace Microsoft.ML.Sweeper
         private readonly object _lock;
         private readonly CancellationTokenSource _cts;
 
-        private readonly BufferBlock<ParameterSetWithId> _paramQueue;
+        private readonly Channel<ParameterSetWithId> _paramChannel;
         private readonly int _relaxation;
         private readonly ISweeper _baseSweeper;
         private readonly IHost _host;
@@ -208,7 +208,8 @@ namespace Microsoft.ML.Sweeper
             _lock = new object();
             _results = new List<IRunResult>();
             _nullRuns = new HashSet<int>();
-            _paramQueue = new BufferBlock<ParameterSetWithId>();
+            _paramChannel = Channel.CreateUnbounded<ParameterSetWithId>(
+                new UnboundedChannelOptions { SingleWriter = true });
 
             PrepareNextBatch(null);
         }
@@ -220,12 +221,12 @@ namespace Microsoft.ML.Sweeper
             if (Utils.Size(paramSets) == 0)
             {
                 // Mark the queue as completed.
-                _paramQueue.Complete();
+                _paramChannel.Writer.Complete();
                 return;
             }
             // Assign an id to each ParameterSet and enque it.
             foreach (var paramSet in paramSets)
-                _paramQueue.Post(new ParameterSetWithId(_numGenerated++, paramSet));
+                _paramChannel.Writer.TryWrite(new ParameterSetWithId(_numGenerated++, paramSet));
             EnsureResultsSize();
         }
 
@@ -272,13 +273,13 @@ namespace Microsoft.ML.Sweeper
             }
         }
 
-        public async Task<ParameterSetWithId> Propose()
+        public async Task<ParameterSetWithId> ProposeAsync()
         {
             if (_cts.IsCancellationRequested)
                 return null;
             try
             {
-                return await _paramQueue.ReceiveAsync(_cts.Token);
+                return await _paramChannel.Reader.ReadAsync(_cts.Token);
             }
             catch (InvalidOperationException)
             {

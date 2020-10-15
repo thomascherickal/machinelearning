@@ -19,6 +19,7 @@ using NumSharp;
 using Tensorflow;
 using static Microsoft.ML.TensorFlow.TensorFlowUtils;
 using static Tensorflow.Binding;
+using Utils = Microsoft.ML.Internal.Utilities.Utils;
 
 [assembly: LoadableClass(DnnRetrainTransformer.Summary, typeof(IDataTransform), typeof(DnnRetrainTransformer),
     typeof(DnnRetrainEstimator.Options), typeof(SignatureDataTransform), DnnRetrainTransformer.UserName, DnnRetrainTransformer.ShortName)]
@@ -37,8 +38,10 @@ namespace Microsoft.ML.Transforms
     /// <summary>
     /// <see cref="ITransformer" /> for the <see cref="DnnRetrainEstimator"/>.
     /// </summary>
-    internal sealed class DnnRetrainTransformer : RowToRowTransformerBase
+    internal sealed class DnnRetrainTransformer : RowToRowTransformerBase, IDisposable
     {
+        private bool _isDisposed;
+
         private readonly IHostEnvironment _env;
         private readonly string _modelLocation;
         private readonly bool _isTemporarySavedModel;
@@ -313,7 +316,17 @@ namespace Microsoft.ML.Transforms
                 ops = new[] { c_api.TF_GraphOperationByName(Graph, options.OptimizationOperation) };
 
             // Instantiate the graph.
-            Runner runner;
+            string[] outputs = null;
+            if (options.LossOperation != null && options.MetricOperation != null)
+                outputs = new[] { options.LossOperation, options.MetricOperation };
+            else if (options.LossOperation != null)
+                outputs = new[] { options.LossOperation };
+            else if (options.MetricOperation != null)
+                outputs = new[] { options.MetricOperation };
+
+            Runner runner = new Runner(_session, new[] { options.LearningRateOperation }.Concat(inputsForTraining).ToArray(),
+                outputs, new[] { options.OptimizationOperation }).AddInput(new Tensor(options.LearningRate), 0);
+
             var cols = input.Schema.Where(c => inputColIndices.Contains(c.Index));
 
             for (int epoch = 0; epoch < options.Epoch; epoch++)
@@ -340,22 +353,6 @@ namespace Microsoft.ML.Transforms
                             if (((cursor.Position + 1) % options.BatchSize) == 0)
                             {
                                 isDataLeft = false;
-                                runner = new Runner(_session);
-
-                                // Add Learning Rate.
-                                if (!string.IsNullOrEmpty(options.LearningRateOperation))
-                                    runner.AddInput(options.LearningRateOperation, new Tensor(options.LearningRate));
-
-                                // Add operations.
-                                if (!string.IsNullOrEmpty(options.OptimizationOperation))
-                                    runner.AddOperation(options.OptimizationOperation);
-
-                                // Add outputs.
-                                if (options.LossOperation != null)
-                                    runner.AddOutputs(options.LossOperation);
-                                if (options.MetricOperation != null)
-                                    runner.AddOutputs(options.MetricOperation);
-
                                 var (l, m) = ExecuteGraphAndRetrieveMetrics(inputsForTraining, srcTensorGetters, runner);
                                 loss += l;
                                 metric += m;
@@ -382,14 +379,20 @@ namespace Microsoft.ML.Transforms
             float loss = 0.0f;
             float metric = 0.0f;
             for (int i = 0; i < inputs.Length; i++)
-                runner.AddInput(inputs[i], srcTensorGetters[i].GetBufferedBatchTensor());
+                runner.AddInput(srcTensorGetters[i].GetBufferedBatchTensor(), i + 1);
 
             Tensor[] tensor = runner.Run();
             if (tensor.Length > 0 && tensor[0] != IntPtr.Zero)
+            {
                 tensor[0].ToScalar<float>(ref loss);
+                tensor[0].Dispose();
+            }
 
             if (tensor.Length > 1 && tensor[1] != IntPtr.Zero)
+            {
                 tensor[1].ToScalar<float>(ref metric);
+                tensor[1].Dispose();
+            }
 
             return (loss, metric);
         }
@@ -406,12 +409,10 @@ namespace Microsoft.ML.Transforms
                 // Save the model on disk
                 var path = Path.Combine(modelDir, DefaultModelFileNames.TmpMlnetModel);
                 //var input = GetOperationFromName(options.SaveLocationOperation, Session);
-                var runner = new Runner(_session); //, new[] { new TF_Output(input.Item1, input.Item2) }, null, new[] { c_api.TF_GraphOperationByName(Graph, options.SaveOperation) });
+                var runner = new Runner(_session, new[] { options.SaveLocationOperation },
+                    null, new[] { options.SaveOperation }).AddInput(new Tensor(path), 0);
 
-                runner.AddInput(options.SaveLocationOperation, new Tensor(path))
-                    .AddOperation(options.SaveOperation)
-                    .Run();
-
+                runner.Run();
                 // Preserve original files
                 var variablesPath = Path.Combine(modelDir, DefaultModelFileNames.VariablesFolder);
                 var archivePath = Path.Combine(variablesPath + "-" + Guid.NewGuid().ToString());
@@ -530,7 +531,7 @@ namespace Microsoft.ML.Transforms
 
             _env = env;
             _session = session;
-            _modelLocation = modelLocation;
+            _modelLocation = Path.IsPathRooted(modelLocation) ? modelLocation : Path.Combine(Directory.GetCurrentDirectory(), modelLocation);
             _isTemporarySavedModel = isTemporarySavedModel;
             _addBatchDimensionInput = addBatchDimensionInput;
             _inputs = inputColumnNames;
@@ -607,7 +608,7 @@ namespace Microsoft.ML.Transforms
                 new ObjectDisposedException(nameof(graph));
 
             var cstatus = status == null ? new Status() : status;
-            var n = c_api.TF_GraphGetTensorNumDims(graph, output, cstatus);
+            var n = c_api.TF_GraphGetTensorNumDims(graph, output, cstatus.Handle);
 
             cstatus.Check();
 
@@ -615,7 +616,7 @@ namespace Microsoft.ML.Transforms
                 return new TensorShape(new int[0]);
 
             var dims = new long[n];
-            c_api.TF_GraphGetTensorShape(graph, output, dims, dims.Length, cstatus);
+            c_api.TF_GraphGetTensorShape(graph, output, dims, dims.Length, cstatus.Handle);
             cstatus.Check();
             return new TensorShape(dims.Select(x => (int)x).ToArray());
         }
@@ -725,13 +726,11 @@ namespace Microsoft.ML.Transforms
             });
         }
 
-        ~DnnRetrainTransformer()
+        public void Dispose()
         {
-            Dispose(false);
-        }
+            if (_isDisposed)
+                return;
 
-        private void Dispose(bool disposing)
-        {
             // Ensure that the Session is not null and it's handle is not Zero, as it may have already been disposed/finalized.
             // Technically we shouldn't be calling this if disposing == false, since we're running in finalizer
             // and the GC doesn't guarantee ordering of finalization of managed objects, but we have to make sure
@@ -740,6 +739,8 @@ namespace Microsoft.ML.Transforms
             {
                 if (_session != null && _session != IntPtr.Zero)
                 {
+                    if (_session.graph != null)
+                        _session.graph.Dispose();
                     _session.close();
                 }
             }
@@ -749,6 +750,8 @@ namespace Microsoft.ML.Transforms
                 {
                     DeleteFolderWithRetries(Host, _modelLocation);
                 }
+
+                _isDisposed = true;
             }
         }
 
@@ -864,7 +867,7 @@ namespace Microsoft.ML.Transforms
                 return Utils.MarshalInvoke(MakeGetter<int>, type, input, iinfo, srcTensorGetters, activeOutputColNames, outputCache);
             }
 
-            private Delegate MakeGetter<T>(DataViewRow input, int iinfo, ITensorValueGetter[] srcTensorGetters, string[] activeOutputColNames, OutputCache outputCache) where T: unmanaged
+            private Delegate MakeGetter<T>(DataViewRow input, int iinfo, ITensorValueGetter[] srcTensorGetters, string[] activeOutputColNames, OutputCache outputCache) where T : unmanaged
             {
                 Host.AssertValue(input);
 
@@ -921,15 +924,14 @@ namespace Microsoft.ML.Transforms
                 {
                     if (_parent.Graph.graph_key != tf.get_default_graph().graph_key)
                         _parent._session.graph.as_default();
-                    Runner runner = new Runner(_parent._session);
+
+                    Runner runner = new Runner(_parent._session,
+                        _parent._inputs.Select(x => _parent._idvToTfMapping[x]).ToArray(),
+                        _parent._outputs.Select(x => _parent._idvToTfMapping[x]).ToArray());
 
                     // Feed the inputs.
                     for (int i = 0; i < _parent._inputs.Length; i++)
-                        runner.AddInput(_parent._idvToTfMapping[_parent._inputs[i]], srcTensorGetters[i].GetTensor());
-
-                    // Add outputs.
-                    for (int i = 0; i < _parent._outputs.Length; i++)
-                        runner.AddOutputs(_parent._idvToTfMapping[_parent._outputs[i]]);
+                        runner.AddInput(srcTensorGetters[i].GetTensor(), 0);
 
                     // Execute the graph.
                     var tensors = runner.Run();
@@ -1039,48 +1041,10 @@ namespace Microsoft.ML.Transforms
                 }
                 else
                 {
-                    var tensor = CastDataAndReturnAsTensor(_bufferedData);
+                    var tensor = TensorFlowUtils.CastDataAndReturnAsTensor(_bufferedData, _tfShape);
                     _position = 0;
                     return tensor;
                 }
-            }
-
-            private Tensor CastDataAndReturnAsTensor(T[] data)
-            {
-                if (typeof(T) == typeof(sbyte))
-                    return new Tensor((sbyte[])(object)data, _dims, TF_DataType.TF_INT8);
-                else if (typeof(T) == typeof(long))
-                    return new Tensor((long[])(object)data, _dims, TF_DataType.TF_INT64);
-                else if (typeof(T) == typeof(Int32))
-                    return new Tensor((Int32[])(object)data, _dims, TF_DataType.TF_INT32);
-                else if (typeof(T) == typeof(Int16))
-                    return new Tensor((Int16[])(object)data, _dims, TF_DataType.TF_INT16);
-                else if (typeof(T) == typeof(byte))
-                    return new Tensor((byte[])(object)data, _dims, TF_DataType.TF_UINT8);
-                else if (typeof(T) == typeof(ulong))
-                    return new Tensor((ulong[])(object)data, _dims, TF_DataType.TF_UINT64);
-                else if (typeof(T) == typeof(UInt32))
-                    return new Tensor((UInt32[])(object)data, _dims, TF_DataType.TF_UINT32);
-                else if (typeof(T) == typeof(UInt16))
-                    return new Tensor((UInt16[])(object)data, _dims, TF_DataType.TF_UINT16);
-                else if (typeof(T) == typeof(bool))
-                    return new Tensor((bool[])(object)data, _dims, TF_DataType.TF_BOOL);
-                else if (typeof(T) == typeof(float))
-                    return new Tensor((float[])(object)data, _dims, TF_DataType.TF_FLOAT);
-                else if (typeof(T) == typeof(float))
-                    return new Tensor((double[])(object)data, _dims, TF_DataType.TF_DOUBLE);
-                else if (typeof(T) == typeof(ReadOnlyMemory<char>))
-                {
-                    byte[][] bytes = new byte[_bufferedData.Length][];
-                    for (int i = 0; i < bytes.Length; i++)
-                    {
-                        bytes[i] = Encoding.UTF8.GetBytes(((ReadOnlyMemory<char>)(object)data[i]).ToArray());
-                    }
-
-                    return new Tensor(bytes, _tfShape.dims.Select(x => (long)x).ToArray());
-                }
-
-                return new Tensor(new NDArray(data, _tfShape));
             }
         }
 
@@ -1125,45 +1089,7 @@ namespace Microsoft.ML.Transforms
                 // This is done to reduce memory allocation every time tensor is created.
                 _denseData = new T[_vBuffer.Length];
                 _vBuffer.CopyTo(_denseData);
-                return CastDataAndReturnAsTensor(_denseData);
-            }
-
-            private Tensor CastDataAndReturnAsTensor(T[] data)
-            {
-                if (typeof(T) == typeof(sbyte))
-                    return new Tensor((sbyte[])(object)data, _dims, TF_DataType.TF_INT8);
-                else if (typeof(T) == typeof(long))
-                    return new Tensor((long[])(object)data, _dims, TF_DataType.TF_INT64);
-                else if (typeof(T) == typeof(Int32))
-                    return new Tensor((Int32[])(object)data, _dims, TF_DataType.TF_INT32);
-                else if (typeof(T) == typeof(Int16))
-                    return new Tensor((Int16[])(object)data, _dims, TF_DataType.TF_INT16);
-                else if (typeof(T) == typeof(byte))
-                    return new Tensor((byte[])(object)data, _dims, TF_DataType.TF_UINT8);
-                else if (typeof(T) == typeof(ulong))
-                    return new Tensor((ulong[])(object)data, _dims, TF_DataType.TF_UINT64);
-                else if (typeof(T) == typeof(UInt32))
-                    return new Tensor((UInt32[])(object)data, _dims, TF_DataType.TF_UINT32);
-                else if (typeof(T) == typeof(UInt16))
-                    return new Tensor((UInt16[])(object)data, _dims, TF_DataType.TF_UINT16);
-                else if (typeof(T) == typeof(bool))
-                    return new Tensor((bool[])(object)data, _dims, TF_DataType.TF_BOOL);
-                else if (typeof(T) == typeof(float))
-                    return new Tensor((float[])(object)data, _dims, TF_DataType.TF_FLOAT);
-                else if (typeof(T) == typeof(double))
-                    return new Tensor((double[])(object)data, _dims, TF_DataType.TF_DOUBLE);
-                else if (typeof(T) == typeof(ReadOnlyMemory<char>))
-                {
-                    byte[][] bytes = new byte[_vBuffer.Length][];
-                    for (int i = 0; i < bytes.Length; i++)
-                    {
-                        bytes[i] = Encoding.UTF8.GetBytes(((ReadOnlyMemory<char>)(object)data[i]).ToArray());
-                    }
-
-                    return new Tensor(bytes, _tfShape.dims.Select(x => (long)x).ToArray());
-                }
-
-                return new Tensor(new NDArray(data, _tfShape));
+                return TensorFlowUtils.CastDataAndReturnAsTensor(_denseData, _tfShape);
             }
 
             public void BufferTrainingData()
@@ -1176,7 +1102,7 @@ namespace Microsoft.ML.Transforms
             public Tensor GetBufferedBatchTensor()
             {
                 _position = 0;
-                var tensor = CastDataAndReturnAsTensor(_bufferedData);
+                var tensor = TensorFlowUtils.CastDataAndReturnAsTensor(_bufferedData, _tfShape);
                 _bufferedData = new T[_bufferedDataSize];
                 return tensor;
             }
@@ -1265,12 +1191,12 @@ namespace Microsoft.ML.Transforms
             public float LearningRate = 0.01f;
 
             /// <summary>
-            /// Name of the input in TensorFlow graph that specifiy the location for saving/restoring models to/from disk.
+            /// Name of the input in TensorFlow graph that specify the location for saving/restoring models to/from disk.
             /// This parameter is set by different kinds of 'Savers' in TensorFlow and users don't have control over this.
             /// Therefore, its highly unlikely that this parameter is changed from its default value of 'save/Const'.
             /// Please change it cautiously if you need to.
             /// </summary>
-            [Argument(ArgumentType.AtMostOnce, HelpText = "Name of the input in TensorFlow graph that specifiy the location for saving/restoring models from disk.", SortOrder = 13)]
+            [Argument(ArgumentType.AtMostOnce, HelpText = "Name of the input in TensorFlow graph that specify the location for saving/restoring models from disk.", SortOrder = 13)]
             public string SaveLocationOperation = "save/Const";
 
             /// <summary>
@@ -1279,7 +1205,7 @@ namespace Microsoft.ML.Transforms
             /// Therefore, its highly unlikely that this parameter is changed from its default value of 'save/control_dependency'.
             /// Please change it cautiously if you need to.
             /// </summary>
-            [Argument(ArgumentType.AtMostOnce, HelpText = "Name of the input in TensorFlow graph that specifiy the location for saving/restoring models from disk.", SortOrder = 14)]
+            [Argument(ArgumentType.AtMostOnce, HelpText = "Name of the input in TensorFlow graph that specify the location for saving/restoring models from disk.", SortOrder = 14)]
             public string SaveOperation = "save/control_dependency";
 
             /// <summary>
@@ -1356,7 +1282,7 @@ namespace Microsoft.ML.Transforms
         {
             _host.CheckValue(input, nameof(input));
             if (_transformer == null)
-                _transformer =  new DnnRetrainTransformer(_host, _options, _tensorFlowModel, input);
+                _transformer = new DnnRetrainTransformer(_host, _options, _tensorFlowModel, input);
 
             // Validate input schema.
             _transformer.GetOutputSchema(input.Schema);

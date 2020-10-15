@@ -4,9 +4,10 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
-using System.Threading.Tasks.Dataflow;
 using Microsoft.ML;
 using Microsoft.ML.CommandLine;
 using Microsoft.ML.Data;
@@ -42,20 +43,20 @@ namespace Microsoft.ML.Transforms
         public sealed class Options
         {
             // REVIEW: A more intelligent heuristic, based on the expected size of the inputs, perhaps?
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "The pool will have this many rows", ShortName = "rows")]
+            [Argument(ArgumentType.LastOccurrenceWins, HelpText = "The pool will have this many rows", ShortName = "rows")]
             public int PoolRows = Defaults.PoolRows;
 
             // REVIEW: Come up with a better way to specify the desired set of functionality.
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "If true, the transform will not attempt to shuffle the input cursor but only shuffle based on the pool. This parameter has no effect if the input data was not itself shufflable.", ShortName = "po")]
+            [Argument(ArgumentType.LastOccurrenceWins, HelpText = "If true, the transform will not attempt to shuffle the input cursor but only shuffle based on the pool. This parameter has no effect if the input data was not itself shufflable.", ShortName = "po")]
             public bool PoolOnly = Defaults.PoolOnly;
 
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "If true, the transform will always provide a shuffled view.", ShortName = "force")]
+            [Argument(ArgumentType.LastOccurrenceWins, HelpText = "If true, the transform will always provide a shuffled view.", ShortName = "force")]
             public bool ForceShuffle = Defaults.ForceShuffle;
 
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "If true, the transform will always shuffle the input. The default value is the same as forceShuffle.", ShortName = "forceSource")]
+            [Argument(ArgumentType.LastOccurrenceWins, HelpText = "If true, the transform will always shuffle the input. The default value is the same as forceShuffle.", ShortName = "forceSource")]
             public bool? ForceShuffleSource;
 
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "The random seed to use for forced shuffling.", ShortName = "seed")]
+            [Argument(ArgumentType.LastOccurrenceWins, HelpText = "The random seed to use for forced shuffling.", ShortName = "seed")]
             public int? ForceShuffleSeed;
         }
 
@@ -229,7 +230,7 @@ namespace Microsoft.ML.Transforms
             provider.CheckValue(cursor, nameof(cursor));
             // REVIEW: In principle, we could limit this check to only active columns,
             // if we extend the use of this utility.
-            provider.CheckParam(CanShuffleAll(cursor.Schema), nameof(cursor), "Cannot shuffle a cursor with some uncachable columns");
+            provider.CheckParam(CanShuffleAll(cursor.Schema), nameof(cursor), "Cannot shuffle a cursor with some uncacheable columns");
             provider.CheckValue(rand, nameof(rand));
 
             if (poolRows == 1)
@@ -453,6 +454,9 @@ namespace Microsoft.ML.Transforms
                 protected abstract void Copy(in T src, ref T dst);
             }
 
+            private static readonly FuncInstanceMethodInfo1<Cursor, int, Delegate> _createGetterDelegateMethodInfo
+                = FuncInstanceMethodInfo1<Cursor, int, Delegate>.Create(target => target.CreateGetterDelegate<int>);
+
             // The number of examples to have in each synchronization block. This should be >= 1.
             private const int _blockSize = 16;
             // The number of spare blocks to keep the filler worker busy on. This should be >= 1.
@@ -483,13 +487,12 @@ namespace Microsoft.ML.Transforms
             private int _liveCount;
             private bool _doneConsuming;
 
-            private readonly BufferBlock<int> _toProduce;
-            private readonly BufferBlock<int> _toConsume;
+            private readonly Channel<int> _toProduceChannel;
+            private readonly Channel<int> _toConsumeChannel;
             private readonly Task _producerTask;
             private Exception _producerTaskException;
 
             private readonly int[] _colToActivesIndex;
-            private bool _disposed;
 
             public override DataViewSchema Schema => _input.Schema;
 
@@ -538,33 +541,20 @@ namespace Microsoft.ML.Transforms
                 _liveCount = 1;
 
                 // Set up the producer worker.
-                _toConsume = new BufferBlock<int>();
-                _toProduce = new BufferBlock<int>();
+                _toConsumeChannel = Channel.CreateUnbounded<int>(new UnboundedChannelOptions { SingleWriter = true });
+                _toProduceChannel = Channel.CreateUnbounded<int>(new UnboundedChannelOptions { SingleWriter = true });
                 // First request the pool - 1 + block size rows, to get us going.
-                PostAssert(_toProduce, _poolRows - 1 + _blockSize);
+                PostAssert(_toProduceChannel, _poolRows - 1 + _blockSize);
                 // Queue up the remaining capacity.
                 for (int i = 1; i < _bufferDepth; ++i)
-                    PostAssert(_toProduce, _blockSize);
+                    PostAssert(_toProduceChannel, _blockSize);
 
-                _producerTask = LoopProducerWorker();
+                _producerTask = ProduceAsync();
             }
 
-            protected override void Dispose(bool disposing)
+            public static void PostAssert<T>(Channel<T> target, T item)
             {
-                if (_disposed)
-                    return;
-                if (disposing && _producerTask.Status == TaskStatus.Running)
-                {
-                    _toProduce.Post(0);
-                    _producerTask.Wait();
-                }
-                _disposed = true;
-                base.Dispose(disposing);
-            }
-
-            public static void PostAssert<T>(ITargetBlock<T> target, T item)
-            {
-                bool retval = target.Post(item);
+                bool retval = target.Writer.TryWrite(item);
                 Contracts.Assert(retval);
             }
 
@@ -573,20 +563,22 @@ namespace Microsoft.ML.Transforms
                 return _idGetter;
             }
 
-            private async Task LoopProducerWorker()
+            private async Task ProduceAsync()
             {
                 try
                 {
                     int circularIndex = 0;
-                    for (; ; )
+                    while (await _toProduceChannel.Reader.WaitToReadAsync().ConfigureAwait(false))
                     {
-                        int requested = await _toProduce.ReceiveAsync();
-                        if (requested == 0)
+                        int requested;
+                        if (!_toProduceChannel.Reader.TryRead(out requested))
                         {
-                            // We had some sort of early exit. Just go out, do not post even the
-                            // sentinel to the consumer, as nothing will be consumed any more.
-                            return;
+                            // The producer Channel's Reader.WaitToReadAsync returned true,
+                            // but the Reader's TryRead returned false -
+                            // so loop back around and try again.
+                            continue;
                         }
+
                         Ch.Assert(requested >= _blockSize);
                         int numRows;
                         for (numRows = 0; numRows < requested; ++numRows)
@@ -601,14 +593,14 @@ namespace Microsoft.ML.Transforms
                             if (circularIndex == _pipeIndices.Length)
                                 circularIndex = 0;
                         }
-                        PostAssert(_toConsume, numRows);
+                        PostAssert(_toConsumeChannel, numRows);
                         if (numRows < requested)
                         {
                             // We've reached the end of the cursor. Send the sentinel, then exit.
                             // This assumes that the receiver will receive things in Post order
                             // (so that the sentinel is received, after the last Post).
                             if (numRows > 0)
-                                PostAssert(_toConsume, 0);
+                                PostAssert(_toConsumeChannel, 0);
                             return;
                         }
                     }
@@ -617,7 +609,7 @@ namespace Microsoft.ML.Transforms
                 {
                     _producerTaskException = ex;
                     // Send the sentinel in this case as well, the field will be checked.
-                    PostAssert(_toConsume, 0);
+                    PostAssert(_toConsumeChannel, 0);
                 }
             }
 
@@ -634,18 +626,25 @@ namespace Microsoft.ML.Transforms
                 {
                     // We should let the producer know it can give us more stuff.
                     // It is possible for int values to be sent beyond the
-                    // end of the sentinel, but we suppose this is irrelevant.
-                    PostAssert(_toProduce, _deadCount);
+                    // end of the Channel, but we suppose this is irrelevant.
+                    PostAssert(_toProduceChannel, _deadCount);
                     _deadCount = 0;
                 }
 
                 while (_liveCount < _poolRows && !_doneConsuming)
                 {
                     // We are under capacity. Try to get some more.
-                    int got = _toConsume.Receive();
+                    ValueTask<int> readTask = _toConsumeChannel.Reader.ReadAsync();
+
+                    // Note you can't wait synchronously on a ValueTask. So if it
+                    // hasn't been completed yet, need to call AsTask() to get a Task
+                    // which can be waited on synchronously.
+                    int got = readTask.IsCompletedSuccessfully ?
+                        readTask.Result :
+                        readTask.AsTask().GetAwaiter().GetResult();
                     if (got == 0)
                     {
-                        // We've reached the end sentinel. There's no reason
+                        // We've reached the end of the Channel. There's no reason
                         // to attempt further communication with the producer.
                         // Check whether something horrible happened.
                         if (_producerTaskException != null)
@@ -678,8 +677,7 @@ namespace Microsoft.ML.Transforms
             {
                 Ch.Assert(0 <= col && col < _colToActivesIndex.Length);
                 Ch.Assert(_colToActivesIndex[col] >= 0);
-                Func<int, Delegate> createDel = CreateGetterDelegate<int>;
-                return Utils.MarshalInvoke(createDel, Schema[col].Type.RawType, col);
+                return Utils.MarshalInvoke(_createGetterDelegateMethodInfo, this, Schema[col].Type.RawType, col);
             }
 
             private Delegate CreateGetterDelegate<TValue>(int col)
@@ -715,9 +713,12 @@ namespace Microsoft.ML.Transforms
             {
                 Ch.CheckParam(column.Index < _colToActivesIndex.Length, nameof(column));
                 Ch.CheckParam(_colToActivesIndex[column.Index] >= 0, nameof(column), "requested column not active");
-                ValueGetter<TValue> getter = _getters[_colToActivesIndex[column.Index]] as ValueGetter<TValue>;
+
+                var originGetter = _getters[_colToActivesIndex[column.Index]];
+                ValueGetter<TValue> getter = originGetter as ValueGetter<TValue>;
                 if (getter == null)
-                    throw Ch.Except("Invalid TValue: '{0}'", typeof(TValue));
+                    throw Ch.Except($"Invalid TValue: '{typeof(TValue)}', " +
+                            $"expected type: '{originGetter.GetType().GetGenericArguments().First()}'.");
                 return getter;
             }
         }

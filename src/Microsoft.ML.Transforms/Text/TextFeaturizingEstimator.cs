@@ -44,6 +44,7 @@ namespace Microsoft.ML.Transforms.Text
     /// | Does this estimator need to look at the data to train its parameters? | Yes. |
     /// | Input column data type | [text](xref:Microsoft.ML.Data.TextDataViewType) |
     /// | Output column data type | Vector of <xref:System.Single> |
+    /// | Exportable to ONNX | No |
     ///
     /// This estimator gives the user one-stop solution for doing:
     /// * Language Detection
@@ -194,7 +195,7 @@ namespace Microsoft.ML.Transforms.Text
             [Argument(ArgumentType.AtMostOnce, HelpText = "Column containing the transformed text tokens.", ShortName = "tokens,showtext,showTransformedText", SortOrder = 9)]
             public string OutputTokensColumnName;
 
-            [Argument(ArgumentType.Multiple, HelpText = "A dictionary of whitelisted terms.", ShortName = "dict", NullName = "<None>", SortOrder = 10, Hide = true)]
+            [Argument(ArgumentType.Multiple, HelpText = "A dictionary of allowed terms.", ShortName = "dict", NullName = "<None>", SortOrder = 10, Hide = true)]
             internal TermLoaderArguments Dictionary;
 
             [TGUI(Label = "Word Gram Extractor")]

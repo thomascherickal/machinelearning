@@ -4,6 +4,7 @@
 
 using System;
 using System.Data.Common;
+using System.Linq;
 using Microsoft.ML.Internal.Utilities;
 using Microsoft.ML.Runtime;
 
@@ -13,6 +14,9 @@ namespace Microsoft.ML.Data
     {
         private sealed class Cursor : RootCursorBase
         {
+            private static readonly FuncInstanceMethodInfo1<Cursor, int, Delegate> _createGetterDelegateMethodInfo
+                = FuncInstanceMethodInfo1<Cursor, int, Delegate>.Create(target => target.CreateGetterDelegate<int>);
+
             private readonly Bindings _bindings;
             private readonly bool[] _active; // Which columns are active.
             private readonly DatabaseSource _source;
@@ -71,6 +75,7 @@ namespace Microsoft.ML.Data
                     {
                         _command = Connection.CreateCommand();
                         _command.CommandText = _source.CommandText;
+                        _command.CommandTimeout = _source.CommandTimeoutInSeconds;
                     }
                     return _command;
                 }
@@ -155,15 +160,17 @@ namespace Microsoft.ML.Data
                 Ch.CheckParam(column.Index < _getters.Length, nameof(column), "requested column not valid.");
                 Ch.Check(IsColumnActive(column));
 
-                var fn = _getters[column.Index] as ValueGetter<TValue>;
+                var originFn = _getters[column.Index];
+                var fn = originFn as ValueGetter<TValue>;
                 if (fn == null)
-                    throw Ch.Except("Invalid TValue in GetGetter: '{0}'", typeof(TValue));
+                    throw Ch.Except($"Invalid TValue in GetGetter: '{typeof(TValue)}', " +
+                        $"expected type: '{originFn.GetType().GetGenericArguments().First()}'.");
                 return fn;
             }
 
             private Delegate CreateGetterDelegate(int col)
             {
-                return Utils.MarshalInvoke(CreateGetterDelegate<int>, _bindings.Infos[col].ColType.RawType, col);
+                return Utils.MarshalInvoke(_createGetterDelegateMethodInfo, this, _bindings.Infos[col].ColType.RawType, col);
             }
 
             private Delegate CreateGetterDelegate<TValue>(int col)

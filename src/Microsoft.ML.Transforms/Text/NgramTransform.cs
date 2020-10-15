@@ -753,27 +753,39 @@ namespace Microsoft.ML.Transforms.Text
                         continue;
 
                     string outputColumnName = _parent.ColumnPairs[iinfo].outputColumnName;
+
+                    // NOTE:
+                    // There is a subtle side effect in how OnnxContextImpl works
+                    // AddIntermediateVariable picks a unique name for the variable being added
+                    // and overwrites any existing old name with the new name in its column map
+                    // If the pipeline consists of the same column name being transformed by more
+                    // than one transformer, then the srcVariableName used must be the old name
+                    // and the dstVariableName must be the newly chosen unique name
+                    // Therefore, GetVariableName must always be called before AddIntermediateVariable here
+                    string srcVariableName = ctx.GetVariableName(inputColumnName);
                     string dstVariableName = ctx.AddIntermediateVariable(_srcTypes[iinfo], outputColumnName, true);
-                    SaveAsOnnxCore(ctx, iinfo, ctx.GetVariableName(inputColumnName), dstVariableName);
+                    SaveAsOnnxCore(ctx, iinfo, srcVariableName, dstVariableName);
                 }
             }
 
-            private void SaveAsOnnxCore(OnnxContext ctx, int iinfo, string srcVariableName, string dstVariableName )
+            private void SaveAsOnnxCore(OnnxContext ctx, int iinfo, string srcVariableName, string dstVariableName)
             {
-                VBuffer<ReadOnlyMemory<char>> slotNames = default;
-                GetSlotNames(iinfo, 0, ref slotNames);
+                const int minimumOpSetVersion = 9;
+                ctx.CheckOpSetVersion(minimumOpSetVersion, LoaderSignature);
 
                 var transformInfo = _parent._transformInfos[iinfo];
 
                 // TfIdfVectorizer accepts strings, int32 and int64 tensors.
                 // But in the ML.NET implementation of the NGramTransform, it only accepts keys as inputs
-                // That are the result of ValueToKeyMapping transformer, which outputs UInt32 values
-                // So, if it is UInt32 or UInt64, cast the output here to Int32/Int64
+                // That are the result of ValueToKeyMapping transformer, which outputs UInt32 values,
+                // Or TokenizingByCharacters, which outputs UInt16 values
+                // So, if it is UInt32, UInt64, or UInt16, cast the output here to Int32/Int64
                 string opType;
                 var vectorType = _srcTypes[iinfo] as VectorDataViewType;
 
                 if ((vectorType != null) &&
-                    ((vectorType.RawType == typeof(VBuffer<UInt32>)) || (vectorType.RawType == typeof(VBuffer<UInt64>))))
+                    ((vectorType.RawType == typeof(VBuffer<UInt32>)) || (vectorType.RawType == typeof(VBuffer<UInt64>)) ||
+                    (vectorType.RawType == typeof(VBuffer<UInt16>))))
                 {
                     var dataKind = _srcTypes[iinfo] == NumberDataViewType.UInt32 ? DataKind.Int32 : DataKind.Int64;
 
@@ -831,6 +843,7 @@ namespace Microsoft.ML.Transforms.Text
     /// | Does this estimator need to look at the data to train its parameters? | Yes |
     /// | Input column data type | Vector of [key](xref:Microsoft.ML.Data.KeyDataViewType) type. |
     /// | Output column data type | Known-sized vector of <xref:System.Single> |
+    /// | Exportable to ONNX | Yes |
     ///
     /// The resulting <xref:Microsoft.ML.Transforms.Text.NgramExtractingTransformer>
     /// creates a new column, named as specified in the output column name parameters, where each

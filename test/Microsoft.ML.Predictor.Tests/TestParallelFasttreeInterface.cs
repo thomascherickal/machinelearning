@@ -6,6 +6,7 @@ using System;
 using Microsoft.ML;
 using Microsoft.ML.Internal.Utilities;
 using Microsoft.ML.RunTests;
+using Microsoft.ML.TestFrameworkCommon;
 using Microsoft.ML.Trainers.FastTree;
 using Xunit;
 using Xunit.Abstractions;
@@ -24,7 +25,7 @@ namespace Microsoft.ML.RunTests
         private bool _isInitTreeLearner = false;
         private bool _isInitIteration = false;
         private bool _isCache = false;
-        public void CacheHistogram(bool isSmallerLeaf, int featureIdx, int subfeature, SufficientStatsBase sufficientStatsBase, bool HasWeights)
+        public void CacheHistogram(bool isSmallerLeaf, int featureIdx, int subfeature, SufficientStatsBase sufficientStatsBase, bool hasWeights)
         {
             Assert.True(_isInitEnv);
             Assert.True(_isInitTreeLearner);
@@ -177,10 +178,9 @@ namespace Microsoft.ML.RunTests
         [TestCategory("ParallelFasttree")]
         public void CheckFastTreeParallelInterface()
         {
-            var dataPath = GetDataPath("breast-cancer.txt");
+            var dataPath = GetDataPath(TestDatasets.breastCancer.trainFilename);
             var outRoot = @"..\Common\CheckInterface";
             var modelOutPath = DeleteOutputPath(outRoot, "codegen-model.zip");
-            var csOutPath = DeleteOutputPath(outRoot, "codegen-out.cs");
 
             var trainArgs = string.Format(
                 "train data={{{0}}} loader=Text{{col=Label:0 col=F!1:1-5 col=F2:6-9}} xf=Concat{{col=Features:F!1,F2}}  tr=FastTreeBinaryClassification{{lr=0.1 nl=12 mil=10 iter=1 parag=checker}} out={{{1}}}",

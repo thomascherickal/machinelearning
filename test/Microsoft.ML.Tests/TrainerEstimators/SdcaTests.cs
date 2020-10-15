@@ -4,17 +4,19 @@
 
 using System.Linq;
 using Microsoft.ML.Data;
+using Microsoft.ML.RunTests;
+using Microsoft.ML.TestFrameworkCommon;
 using Microsoft.ML.Trainers;
 using Xunit;
 
 namespace Microsoft.ML.Tests.TrainerEstimators
 {
-    public partial class TrainerEstimators
+    public partial class TrainerEstimators 
     {
         [Fact]
         public void SdcaWorkout()
         {
-            var dataPath = GetDataPath("breast-cancer.txt");
+            var dataPath = GetDataPath(TestDatasets.breastCancer.trainFilename);
 
             var data = ML.Data.LoadFromTextFile(dataPath, new[] {
                 new TextLoader.Column("Label", DataKind.Single, 0),
@@ -59,7 +61,7 @@ namespace Microsoft.ML.Tests.TrainerEstimators
 
             // Create a new context for ML.NET operations. It can be used for exception tracking and logging,
             // as a catalog of available operations and as the source of randomness.
-            var mlContext = new MLContext();
+            var mlContext = new MLContext(1);
 
             // Step 1: Read the data as an IDataView.
             var data = mlContext.Data.LoadFromEnumerable(rawData);
@@ -140,13 +142,15 @@ namespace Microsoft.ML.Tests.TrainerEstimators
             bool sameScores = true;
             for (int i = 0; i < scores1.Length; i++)
             {
-                if(!CompareNumbersWithTolerance(scores1[i], scores2[i]))
+                if(!CompareNumbersWithTolerance(scores1[i], scores2[i], logFailure: false))
                 {
                     sameScores = false;
                     break;
                 }
             }
             Assert.False(sameScores);
+
+            Done();
         }
 
         [Fact]
@@ -197,13 +201,15 @@ namespace Microsoft.ML.Tests.TrainerEstimators
             bool sameScores = true;
             for (int i = 0; i < scores1.Length; i++)
             {
-                if (!CompareNumbersWithTolerance(scores1[i][0], scores2[i][0]))
+                if (!CompareNumbersWithTolerance(scores1[i][0], scores2[i][0], logFailure: false))
                 {
                     sameScores = false;
                     break;
                 }
             }
             Assert.False(sameScores);
+
+            Done();
         }
 
         [Fact]
@@ -214,7 +220,7 @@ namespace Microsoft.ML.Tests.TrainerEstimators
 
             // Create a new context for ML.NET operations. It can be used for exception tracking and logging,
             // as a catalog of available operations and as the source of randomness.
-            var mlContext = new MLContext();
+            var mlContext = new MLContext(1);
 
             // Step 1: Read the data as an IDataView.
             var data = mlContext.Data.LoadFromEnumerable(rawData);
@@ -256,7 +262,7 @@ namespace Microsoft.ML.Tests.TrainerEstimators
 
             // Create a new context for ML.NET operations. It can be used for exception tracking and logging,
             // as a catalog of available operations and as the source of randomness.
-            var mlContext = new MLContext();
+            var mlContext = new MLContext(1);
 
             // Step 1: Read the data as an IDataView.
             var data = mlContext.Data.LoadFromEnumerable(rawData);
@@ -291,7 +297,7 @@ namespace Microsoft.ML.Tests.TrainerEstimators
 
             // Create a new context for ML.NET operations. It can be used for exception tracking and logging,
             // as a catalog of available operations and as the source of randomness.
-            var mlContext = new MLContext();
+            var mlContext = new MLContext(1);
 
             // Step 1: Read the data as an IDataView.
             var data = mlContext.Data.LoadFromEnumerable(rawData);

@@ -5,18 +5,24 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Microsoft.ML.TestFramework;
 using Microsoft.ML.TestFramework.Attributes;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Microsoft.ML.AutoML.Test
 {
     
-    public class TrainerExtensionsTests
+    public class TrainerExtensionsTests : BaseTestClass
     {
+        public TrainerExtensionsTests(ITestOutputHelper output) : base(output)
+        {
+        }
+
         [Fact]
         public void TrainerExtensionInstanceTests()
         {
-            var context = new MLContext();
+            var context = new MLContext(1);
             var columnInfo = new ColumnInformation();
             var trainerNames = Enum.GetValues(typeof(TrainerName)).Cast<TrainerName>()
                 .Except(new[] { TrainerName.Ova });
@@ -45,7 +51,7 @@ namespace Microsoft.ML.AutoML.Test
         [TensorFlowFact]
         public void TrainerExtensionTensorFlowInstanceTests()
         {
-            var context = new MLContext();
+            var context = new MLContext(1);
             var columnInfo = new ColumnInformation();
             var extension = TrainerExtensionCatalog.GetTrainerExtension(TrainerName.ImageClassification);
             var instance = extension.CreateInstance(context, null, columnInfo);
@@ -117,6 +123,7 @@ namespace Microsoft.ML.AutoML.Test
     ""MinimumExampleCountPerLeaf"": 10,
     ""UseCategoricalSplit"": false,
     ""HandleMissingValue"": false,
+    ""UseZeroAsMissingValue"": false,
     ""MinimumExampleCountPerGroup"": 50,
     ""MaximumCategoricalSplitPointCount"": 16,
     ""CategoricalSmoothing"": 10,
@@ -274,6 +281,32 @@ namespace Microsoft.ML.AutoML.Test
         }
 
         [Fact]
+        public void BuildFastTreeRankingPipelineNode()
+        {
+            var columnInfo = new ColumnInformation()
+            {
+                LabelColumnName = "L",
+                GroupIdColumnName = "GId"
+            };
+            var pipelineNode = new FastTreeRankingExtension().CreatePipelineNode(null, columnInfo);
+            var expectedJson = @"{
+  ""Name"": ""FastTreeRanking"",
+  ""NodeType"": ""Trainer"",
+  ""InColumns"": [
+    ""Features""
+  ],
+  ""OutColumns"": [
+    ""Score""
+  ],
+  ""Properties"": {
+    ""LabelColumnName"": ""L"",
+    ""RowGroupColumnName"": ""GId""
+  }
+}";
+            Util.AssertObjectMatchesJson(expectedJson, pipelineNode);
+        }
+
+        [Fact]
         public void BuildParameterSetLightGbm()
         {
             var props = new Dictionary<string, object>()
@@ -292,8 +325,9 @@ namespace Microsoft.ML.AutoML.Test
             var binaryParams = TrainerExtensionUtil.BuildParameterSet(TrainerName.LightGbmBinary, props);
             var multiParams = TrainerExtensionUtil.BuildParameterSet(TrainerName.LightGbmMulti, props);
             var regressionParams = TrainerExtensionUtil.BuildParameterSet(TrainerName.LightGbmRegression, props);
+            var rankingParams = TrainerExtensionUtil.BuildParameterSet(TrainerName.LightGbmRanking, props);
 
-            foreach (var paramSet in new ParameterSet[] { binaryParams, multiParams, regressionParams })
+            foreach (var paramSet in new ParameterSet[] { binaryParams, multiParams, regressionParams, rankingParams })
             {
                 Assert.Equal(4, paramSet.Count);
                 Assert.Equal("1", paramSet["NumberOfIterations"].ValueText);
@@ -349,7 +383,15 @@ namespace Microsoft.ML.AutoML.Test
             Assert.Equal(publicNames.Distinct().Count(), internalNames.Distinct().Count());
         }
 
-       [Fact]
+        [Fact]
+        public void PublicToPrivateTrainerNamesRankingTest()
+        {
+            var publicNames = Enum.GetValues(typeof(RankingTrainer)).Cast<RankingTrainer>();
+            var internalNames = TrainerExtensionUtil.GetTrainerNames(publicNames);
+            Assert.Equal(publicNames.Distinct().Count(), internalNames.Distinct().Count());
+        }
+
+        [Fact]
         public void PublicToPrivateTrainerNamesNullTest()
         {
             var internalNames = TrainerExtensionUtil.GetTrainerNames(null as IEnumerable<BinaryClassificationTrainer>);
@@ -357,18 +399,18 @@ namespace Microsoft.ML.AutoML.Test
         }
 
         [Fact]
-        public void AllowedTrainersWhitelistNullTest()
+        public void AllowedTrainersAllowListNullTest()
         {
-            var trainers = RecipeInference.AllowedTrainers(new MLContext(), TaskKind.BinaryClassification, new ColumnInformation(), null);
+            var trainers = RecipeInference.AllowedTrainers(new MLContext(1), TaskKind.BinaryClassification, new ColumnInformation(), null);
             Assert.True(trainers.Any());
         }
 
         [Fact]
-        public void AllowedTrainersWhitelistTest()
+        public void AllowedTrainersAllowListTest()
         {
-            var whitelist = new[] { TrainerName.AveragedPerceptronBinary, TrainerName.FastForestBinary };
-            var trainers = RecipeInference.AllowedTrainers(new MLContext(), TaskKind.BinaryClassification, new ColumnInformation(), whitelist);
-            Assert.Equal(whitelist.Count(), trainers.Count());
+            var allowList = new[] { TrainerName.AveragedPerceptronBinary, TrainerName.FastForestBinary };
+            var trainers = RecipeInference.AllowedTrainers(new MLContext(1), TaskKind.BinaryClassification, new ColumnInformation(), allowList);
+            Assert.Equal(allowList.Count(), trainers.Count());
         }
     }
 }

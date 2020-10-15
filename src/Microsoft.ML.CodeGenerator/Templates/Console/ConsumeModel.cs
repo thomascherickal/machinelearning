@@ -31,7 +31,7 @@ CLI_Annotation();
 MB_Annotation();
  } 
             this.Write("\r\nusing System;\r\nusing System.Collections.Generic;\r\nusing System.Linq;\r\nusing Sys" +
-                    "tem.Text;\r\nusing Microsoft.ML;\r\nusing ");
+                    "tem.Text;\r\nusing System.IO;\r\nusing Microsoft.ML;\r\nusing ");
             this.Write(this.ToStringHelper.ToStringWithCulture(Namespace));
             this.Write(".Model;\r\n\r\nnamespace ");
             this.Write(this.ToStringHelper.ToStringWithCulture(Namespace));
@@ -39,22 +39,35 @@ MB_Annotation();
 {
 	public class ConsumeModel
     {
-        // For more info on consuming ML.NET models, visit https://aka.ms/model-builder-consume
+        private static Lazy<PredictionEngine<ModelInput, ModelOutput>> PredictionEngine = new Lazy<PredictionEngine<ModelInput, ModelOutput>>(CreatePredictionEngine);
+
+        public static string MLNetModelPath = Path.GetFullPath(""");
+            this.Write(this.ToStringHelper.ToStringWithCulture(MLNetModelName));
+            this.Write("\");\r\n");
+if(IsAzureImage || IsAzureObjectDetection){ 
+            this.Write(" \r\n        public static string OnnxModelPath = Path.GetFullPath(\"");
+            this.Write(this.ToStringHelper.ToStringWithCulture(OnnxModelName));
+            this.Write("\");\r\n");
+} 
+            this.Write(@"
+        // For more info on consuming ML.NET models, visit https://aka.ms/mlnet-consume
         // Method for consuming model in your app
         public static ModelOutput Predict(ModelInput input)
         {
+            ModelOutput result = PredictionEngine.Value.Predict(input);
+            return result;
+        }
 
+        public static PredictionEngine<ModelInput, ModelOutput> CreatePredictionEngine()
+        {
             // Create new MLContext
             MLContext mlContext = new MLContext();
 
             // Load model & create prediction engine
-            string modelPath = AppDomain.CurrentDomain.BaseDirectory + ""MLModel.zip"";
-            ITransformer mlModel = mlContext.Model.Load(modelPath, out var modelInputSchema);
+            ITransformer mlModel = mlContext.Model.Load(MLNetModelPath, out var modelInputSchema);
             var predEngine = mlContext.Model.CreatePredictionEngine<ModelInput, ModelOutput>(mlModel);
-
-            // Use model to make prediction on input data
-            ModelOutput result = predEngine.Predict(input);
-            return result;
+            
+            return predEngine;
         }
     }
 }
@@ -64,6 +77,10 @@ MB_Annotation();
 
 public string Namespace {get;set;}
 internal CSharp.GenerateTarget Target {get;set;}
+public bool IsAzureObjectDetection {get; set;}=false;
+public bool IsAzureImage {get; set;}=false;
+public string MLNetModelName {get; set;}
+public string OnnxModelName {get; set;}
 
 
 void CLI_Annotation()

@@ -644,6 +644,9 @@ namespace Microsoft.ML.Calibrators
     {
         private sealed class Bound : ISchemaBoundRowMapper
         {
+            private static readonly FuncInstanceMethodInfo1<Bound, DataViewRow, int, Delegate> _getPredictorGetterMethodInfo
+                = FuncInstanceMethodInfo1<Bound, DataViewRow, int, Delegate>.Create(target => target.GetPredictorGetter<int>);
+
             private readonly SchemaBindableCalibratedModelParameters<TSubModel, TCalibrator> _parent;
             private readonly ISchemaBoundRowMapper _predictor;
             private readonly int _scoreCol;
@@ -697,7 +700,7 @@ namespace Microsoft.ML.Calibrators
                         continue;
                     }
                     var type = predictorRow.Schema[column.Index].Type;
-                    getters[column.Index] = Utils.MarshalInvoke(GetPredictorGetter<int>, type.RawType, predictorRow, column.Index);
+                    getters[column.Index] = Utils.MarshalInvoke(_getPredictorGetterMethodInfo, this, type.RawType, predictorRow, column.Index);
                 }
 
                 if (hasProbabilityColumn)
@@ -760,7 +763,7 @@ namespace Microsoft.ML.Calibrators
             _featureContribution = SubModel as IFeatureContributionMapper;
         }
 
-        private static CalibratedModelParametersBase Create(IHostEnvironment env, ModelLoadContext ctx)
+        internal static CalibratedModelParametersBase Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel(GetVersionInfo());
@@ -823,7 +826,7 @@ namespace Microsoft.ML.Calibrators
                 calibrator.GetType()
             };
 
-            // Call the appropiate constructor of the created generic type passing on the previously loaded predictor and calibrator
+            // Call the appropriate constructor of the created generic type passing on the previously loaded predictor and calibrator
             var genericCtor = constructed.GetConstructor(BindingFlags.NonPublic | BindingFlags.Instance, null, constructorArgs, null);
             object genericInstance = genericCtor.Invoke(new object[] { env, ctx, predictor, calibrator });
 
@@ -834,8 +837,9 @@ namespace Microsoft.ML.Calibrators
     [BestFriend]
     internal static class CalibratorUtils
     {
-        // maximum number of rows passed to the calibrator.
-        private const int _maxCalibrationExamples = 1000000;
+        // Maximum number of rows to process when training the Calibrator.
+        // If 0, we'll actually process the whole dataset.
+        private const int _maxCalibrationExamples = 0;
 
         private static bool NeedCalibration(IHostEnvironment env, IChannel ch, ICalibratorTrainer calibrator,
             ITrainer trainer, IPredictor predictor, RoleMappedSchema schema)
@@ -985,6 +989,10 @@ namespace Microsoft.ML.Calibrators
                     caliTrainer.ProcessTrainingExample(score, label > 0, weight);
 
                     if (maxRows > 0 && ++num >= maxRows)
+                        // If maxRows was 0, we'll process all of the rows in the dataset
+                        // Notice that depending on the calibrator, "processing" might mean
+                        // randomly choosing some of the "processed" rows
+                        // to actually train the calibrator.
                         break;
                 }
             }
@@ -1155,7 +1163,7 @@ namespace Microsoft.ML.Calibrators
     /// <summary>
     /// The naive binning-based calibrator.
     /// </summary>
-    public sealed class NaiveCalibrator : ICalibrator, ICanSaveInBinaryFormat
+    public sealed class NaiveCalibrator : ICalibrator, ICanSaveInBinaryFormat, ISingleCanSaveOnnx
     {
         internal const string LoaderSignature = "NaiveCaliExec";
         internal const string RegistrationName = "NaiveCalibrator";
@@ -1170,6 +1178,12 @@ namespace Microsoft.ML.Calibrators
                 loaderSignature: LoaderSignature,
                 loaderAssemblyName: typeof(NaiveCalibrator).Assembly.FullName);
         }
+
+        /// <summary>
+        /// Bool required by the interface ISingleCanSaveOnnx, returns true if
+        /// and only if calibrator can be exported in ONNX.
+        /// </summary>
+        bool ICanSaveOnnx.CanSaveOnnx(OnnxContext ctx) => true;
 
         private readonly IHost _host;
 
@@ -1224,7 +1238,7 @@ namespace Microsoft.ML.Calibrators
             _host.CheckDecode(_binProbs.All(x => (0 <= x && x <= 1)));
         }
 
-        private static NaiveCalibrator Create(IHostEnvironment env, ModelLoadContext ctx)
+        internal static NaiveCalibrator Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(ctx, nameof(ctx));
@@ -1277,6 +1291,45 @@ namespace Microsoft.ML.Calibrators
             return binIdx;
         }
 
+        bool ISingleCanSaveOnnx.SaveAsOnnx(OnnxContext ctx, string[] outputNames, string featureColumn)
+        {
+            _host.CheckValue(ctx, nameof(ctx));
+            _host.CheckValue(outputNames, nameof(outputNames));
+            _host.Check(Utils.Size(outputNames) == 2);
+            // outputNames[0] refers to the name of the Score column, which is the input of this graph
+            // outputNames[1] refers to the name of the Probability column, which is the final output of this graph
+
+            const int minimumOpSetVersion = 9;
+            ctx.CheckOpSetVersion(minimumOpSetVersion, "NaiveCalibrator");
+
+            string opType = "Sub";
+            var minVar = ctx.AddInitializer(Min, "Min");
+            var subNodeOutput = ctx.AddIntermediateVariable(NumberDataViewType.Single, "subNodeOutput");
+            var node = ctx.CreateNode(opType, new[] { outputNames[0], minVar }, new[] { subNodeOutput }, ctx.GetNodeName(opType), "");
+
+            opType = "Div";
+            var binSizeVar = ctx.AddInitializer(BinSize, "BinSize");
+            var divNodeOutput = ctx.AddIntermediateVariable(NumberDataViewType.Single, "binIndexOutput");
+            node = ctx.CreateNode(opType, new[] { subNodeOutput, binSizeVar }, new[] { divNodeOutput }, ctx.GetNodeName(opType), "");
+
+            opType = "Cast";
+            var castOutput = ctx.AddIntermediateVariable(NumberDataViewType.Int64, "castOutput");
+            node = ctx.CreateNode(opType, divNodeOutput, castOutput, ctx.GetNodeName(opType), "");
+            var toTypeInt = typeof(long);
+            node.AddAttribute("to", toTypeInt);
+
+            opType = "Clip";
+            var zeroVar = ctx.AddInitializer(0, "Zero");
+            var numBinsMinusOneVar = ctx.AddInitializer(_binProbs.Length-1, "NumBinsMinusOne");
+            var binIndexOutput = ctx.AddIntermediateVariable(NumberDataViewType.Int64, "binIndexOutput");
+            node = ctx.CreateNode(opType, new[] { castOutput, zeroVar, numBinsMinusOneVar }, new[] { binIndexOutput }, ctx.GetNodeName(opType), "");
+
+            opType = "GatherElements";
+            var binProbabilitiesVar = ctx.AddInitializer(_binProbs, new long[] { _binProbs.Length, 1 }, "BinProbabilities");
+            node = ctx.CreateNode(opType, new[] { binProbabilitiesVar, binIndexOutput }, new[] { outputNames[1] }, ctx.GetNodeName(opType), "");
+
+            return true;
+        }
     }
 
     /// <summary>
@@ -1581,10 +1634,10 @@ namespace Microsoft.ML.Calibrators
         [TlcModule.Component(Name = "FixedPlattCalibrator", FriendlyName = "Fixed Platt Calibrator", Aliases = new[] { "FixedPlatt", "FixedSigmoid" })]
         public sealed class Arguments : ICalibratorTrainerFactory
         {
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "The slope parameter of f(x) = 1 / (1 + exp(-slope * x + offset)", ShortName = "a")]
-            public Double Slope = 1;
+            [Argument(ArgumentType.LastOccurrenceWins, HelpText = "The slope parameter of f(x) = 1 / (1 + exp(slope * x + offset)", ShortName = "a")]
+            public Double Slope = -1;
 
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "The offset parameter of f(x) = 1 / (1 + exp(-slope * x + offset)", ShortName = "b")]
+            [Argument(ArgumentType.LastOccurrenceWins, HelpText = "The offset parameter of f(x) = 1 / (1 + exp(slope * x + offset)", ShortName = "b")]
             public Double Offset = 0;
 
             public ICalibratorTrainer CreateComponent(IHostEnvironment env)
@@ -1618,7 +1671,7 @@ namespace Microsoft.ML.Calibrators
 
     ///<summary>
     /// The Platt calibrator calculates the probability following:
-    /// P(x) = 1 / (1 + exp(-<see cref="PlattCalibrator.Slope"/> * x + <see cref="PlattCalibrator.Offset"/>)
+    /// P(x) = 1 / (1 + exp(<see cref="PlattCalibrator.Slope"/> * x + <see cref="PlattCalibrator.Offset"/>)
     /// </summary>.
     public sealed class PlattCalibrator : ICalibrator, IParameterMixer, ICanSaveModel, ISingleCanSavePfa, ISingleCanSaveOnnx
     {
@@ -1675,7 +1728,7 @@ namespace Microsoft.ML.Calibrators
             _host.CheckDecode(FloatUtils.IsFinite(Offset));
         }
 
-        private static PlattCalibrator Create(IHostEnvironment env, ModelLoadContext ctx)
+        internal static PlattCalibrator Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(ctx, nameof(ctx));
@@ -1742,12 +1795,20 @@ namespace Microsoft.ML.Calibrators
             _host.CheckValue(scoreProbablityColumnNames, nameof(scoreProbablityColumnNames));
             _host.Check(Utils.Size(scoreProbablityColumnNames) == 2);
 
-            string opType = "Affine";
-            string linearOutput = ctx.AddIntermediateVariable(null, "linearOutput", true);
-            var node = ctx.CreateNode(opType, new[] { scoreProbablityColumnNames[0] },
-                new[] { linearOutput }, ctx.GetNodeName(opType), "");
-            node.AddAttribute("alpha", Slope * -1);
-            node.AddAttribute("beta", -0.0000001);
+            const int minimumOpSetVersion = 9;
+            ctx.CheckOpSetVersion(minimumOpSetVersion, "PlattCalibrator");
+
+            // The Affine operator is no longer supported in the v11 opset.
+            // So we have to decompose it using Mul and Add
+            string opType = "Mul";
+            var slopVar = ctx.AddInitializer((float)(-Slope), "Slope");
+            var mulNodeOutput = ctx.AddIntermediateVariable(null, "MulNodeOutput", true);
+            var node = ctx.CreateNode(opType, new[] { scoreProbablityColumnNames[0], slopVar }, new[] { mulNodeOutput }, ctx.GetNodeName(opType), "");
+
+            opType = "Add";
+            var betaVar = ctx.AddInitializer((float)(-Offset), "Offset");
+            var linearOutput = ctx.AddIntermediateVariable(null, "linearOutput", true);
+            node = ctx.CreateNode(opType, new[] { mulNodeOutput, betaVar }, new[] { linearOutput }, ctx.GetNodeName(opType), "");
 
             opType = "Sigmoid";
             node = ctx.CreateNode(opType, new[] { linearOutput },
@@ -1972,7 +2033,7 @@ namespace Microsoft.ML.Calibrators
             _host.CheckDecode(valuePrev <= 1);
         }
 
-        private static IsotonicCalibrator Create(IHostEnvironment env, ModelLoadContext ctx)
+        internal static IsotonicCalibrator Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(ctx, nameof(ctx));
@@ -2080,10 +2141,10 @@ namespace Microsoft.ML.Calibrators
 
         public sealed class FixedPlattInput : CalibrateInputBase
         {
-            [Argument(ArgumentType.AtMostOnce, ShortName = "slope", HelpText = "The slope parameter of the calibration function 1 / (1 + exp(-slope * x + offset)", SortOrder = 1)]
-            public Double Slope = 1;
+            [Argument(ArgumentType.AtMostOnce, ShortName = "slope", HelpText = "The slope parameter of the calibration function 1 / (1 + exp(slope * x + offset)", SortOrder = 1)]
+            public Double Slope = -1;
 
-            [Argument(ArgumentType.AtMostOnce, ShortName = "offset", HelpText = "The offset parameter of the calibration function 1 / (1 + exp(-slope * x + offset)", SortOrder = 3)]
+            [Argument(ArgumentType.AtMostOnce, ShortName = "offset", HelpText = "The offset parameter of the calibration function 1 / (1 + exp(slope * x + offset)", SortOrder = 3)]
             public Double Offset = 0;
         }
 
